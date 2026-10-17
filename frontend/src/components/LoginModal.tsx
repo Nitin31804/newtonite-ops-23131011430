@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogIn, Lock, Mail, ShieldAlert, Sparkles, CheckCircle2, X } from 'lucide-react';
+import { LogIn, Lock, Mail, ShieldAlert, Sparkles, User, UserPlus, ShieldCheck, X } from 'lucide-react';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -13,15 +13,17 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onClose,
   canDismiss = true,
 }) => {
-  const { login, isDemoMode } = useAuth();
+  const { login, setupAdmin, isDemoMode, needsSetup } = useAuth();
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password.trim()) {
       setError('Please provide both email and password.');
@@ -41,11 +43,43 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
   };
 
+  const handleSetupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !email.trim() || !password.trim()) {
+      setError('All fields are required for initial administrator setup.');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Master password must be at least 8 characters in length.');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError('Password and confirmation do not match.');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    const res = await setupAdmin(name.trim(), email.trim(), password);
+    setIsLoading(false);
+
+    if (res.success) {
+      if (onClose) onClose();
+    } else {
+      setError(res.error || 'Failed to complete initial administrator setup.');
+    }
+  };
+
   const fillDemoPersona = (demoEmail: string) => {
     setEmail(demoEmail);
     setPassword('password123');
     setError(null);
   };
+
+  const allowClose = canDismiss && !needsSetup && onClose;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
@@ -56,16 +90,20 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         {/* Modal Header */}
         <div className="flex items-center justify-between pb-4 border-b border-slate-800">
           <div className="flex items-center space-x-2.5">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-cyan-400 to-purple-500 flex items-center justify-center shadow-md">
-              <LogIn className="w-4 h-4 text-white" />
+            <div className={`w-8 h-8 rounded-full ${needsSetup ? 'bg-gradient-to-tr from-emerald-400 to-cyan-500' : 'bg-gradient-to-tr from-cyan-400 to-purple-500'} flex items-center justify-center shadow-md`}>
+              {needsSetup ? <UserPlus className="w-4 h-4 text-white" /> : <LogIn className="w-4 h-4 text-white" />}
             </div>
             <div>
-              <h3 className="text-base font-bold text-white font-sans">Enterprise Sign In</h3>
-              <p className="text-xs text-slate-400">Newtonite Ops Command Center</p>
+              <h3 className="text-base font-bold text-white font-sans">
+                {needsSetup ? 'Initial Administrator Setup' : 'Enterprise Sign In'}
+              </h3>
+              <p className="text-xs text-slate-400">
+                {needsSetup ? 'Fresh Production Database Initializer' : 'Newtonite Ops Command Center'}
+              </p>
             </div>
           </div>
 
-          {canDismiss && onClose && (
+          {allowClose && (
             <button
               onClick={onClose}
               className="p-1 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition"
@@ -76,6 +114,16 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           )}
         </div>
 
+        {/* Setup Banner if needsSetup */}
+        {needsSetup && (
+          <div className="mt-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-start space-x-2 text-emerald-300 text-xs">
+            <ShieldCheck className="w-4 h-4 flex-shrink-0 text-emerald-400 mt-0.5" />
+            <span>
+              Zero users detected in database. Provision the master administrator account to securely unlock the system.
+            </span>
+          </div>
+        )}
+
         {/* Error Notification */}
         {error && (
           <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center space-x-2 text-rose-300 text-xs">
@@ -84,59 +132,143 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           </div>
         )}
 
-        {/* Sign In Form */}
-        <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center space-x-1.5">
-              <Mail className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Corporate Email</span>
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="e.g. eng.lead@newtonite.internal"
-              required
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-cyan-400 transition"
-            />
-          </div>
+        {/* Form Body */}
+        {needsSetup ? (
+          <form onSubmit={handleSetupSubmit} className="mt-5 space-y-3.5">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
+                <User className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Full Name</span>
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Lead Administrator"
+                required
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-400 transition"
+              />
+            </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center space-x-1.5">
-              <Lock className="w-3.5 h-3.5 text-purple-400" />
-              <span>Password</span>
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••••••"
-              required
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-purple-400 transition"
-            />
-          </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
+                <Mail className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Corporate Email</span>
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="e.g. admin@company.internal"
+                required
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-cyan-400 transition"
+              />
+            </div>
 
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full mt-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-white font-semibold text-sm shadow-lg shadow-purple-500/20 flex items-center justify-center space-x-2 transition-all disabled:opacity-50"
-          >
-            {isLoading ? (
-              <>
-                <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
-                <span>Authenticating...</span>
-              </>
-            ) : (
-              <>
-                <LogIn className="w-4 h-4" />
-                <span>Sign In with Credentials</span>
-              </>
-            )}
-          </button>
-        </form>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
+                <Lock className="w-3.5 h-3.5 text-purple-400" />
+                <span>Master Password (Min 8 Characters)</span>
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••••••"
+                required
+                minLength={8}
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-purple-400 transition"
+              />
+            </div>
 
-        {/* Evaluation Quick Fill (Available in Demo Mode) */}
-        {isDemoMode && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
+                <Lock className="w-3.5 h-3.5 text-purple-400" />
+                <span>Confirm Master Password</span>
+              </label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="••••••••••••"
+                required
+                minLength={8}
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-purple-400 transition"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full mt-3 py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-semibold text-sm shadow-lg shadow-emerald-500/20 flex items-center justify-center space-x-2 transition-all disabled:opacity-50"
+            >
+              {isLoading ? (
+                <>
+                  <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                  <span>Provisioning Administrator...</span>
+                </>
+              ) : (
+                <>
+                  <UserPlus className="w-4 h-4" />
+                  <span>Complete Setup & Log In</span>
+                </>
+              )}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleLoginSubmit} className="mt-5 space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center space-x-1.5">
+                <Mail className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Corporate Email</span>
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="e.g. eng.lead@newtonite.internal"
+                required
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-cyan-400 transition"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center space-x-1.5">
+                <Lock className="w-3.5 h-3.5 text-purple-400" />
+                <span>Password</span>
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••••••"
+                required
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-700 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-purple-400 transition"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full mt-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-white font-semibold text-sm shadow-lg shadow-purple-500/20 flex items-center justify-center space-x-2 transition-all disabled:opacity-50"
+            >
+              {isLoading ? (
+                <>
+                  <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                  <span>Authenticating...</span>
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-4 h-4" />
+                  <span>Sign In with Credentials</span>
+                </>
+              )}
+            </button>
+          </form>
+        )}
+
+        {/* Evaluation Quick Fill (Available in Demo Mode when not in setup) */}
+        {!needsSetup && isDemoMode && (
           <div className="mt-6 pt-4 border-t border-slate-800">
             <div className="flex items-center space-x-1.5 mb-2.5">
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />

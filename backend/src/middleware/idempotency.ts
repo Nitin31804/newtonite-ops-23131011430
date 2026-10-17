@@ -2,6 +2,9 @@ import { Response, NextFunction } from 'express';
 import { db } from '../config/database.js';
 import { AuthenticatedRequest } from './auth.js';
 
+// Global registry of keys currently being actively processed by this Node.js instance
+export const activeInFlightKeys = new Set<string>();
+
 export async function idempotencyMiddleware(
   req: AuthenticatedRequest,
   res: Response,
@@ -74,6 +77,8 @@ export async function idempotencyMiddleware(
         response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
         created_at: new Date().toISOString(),
       });
+      // Register in-memory active key to distinguish actively executing slow queries from dead processes
+      activeInFlightKeys.add(idempotencyKey);
     } catch (insertError: any) {
       // Primary key constraint violation: Another concurrent request claimed this key first
       const raced = await db('idempotency_keys').where({ key: idempotencyKey }).first();
@@ -96,6 +101,13 @@ export async function idempotencyMiddleware(
       });
       return;
     }
+
+    // Ensure active key cleanup if client disconnects or connection closes abruptly
+    const cleanupActiveKey = () => {
+      activeInFlightKeys.delete(idempotencyKey);
+    };
+    res.once('finish', cleanupActiveKey);
+    res.once('close', cleanupActiveKey);
 
     // Phase 2: Intercept response and await database update BEFORE flushing to client
     const originalJson = res.json.bind(res);
@@ -146,6 +158,7 @@ export async function idempotencyMiddleware(
         } catch (err) {
           console.error('Idempotency completion interceptor error:', err);
         } finally {
+          activeInFlightKeys.delete(idempotencyKey);
           originalJson(body);
         }
       })();

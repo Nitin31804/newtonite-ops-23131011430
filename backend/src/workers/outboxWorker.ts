@@ -1,5 +1,6 @@
 import { Knex } from 'knex';
 import { db } from '../config/database.js';
+import { activeInFlightKeys } from '../middleware/idempotency.js';
 
 export interface DispatchedNotification {
   id: string;
@@ -47,12 +48,23 @@ export class OutboxWorker {
       });
 
     // 2. Crash recovery: Reclaim zombie in-flight idempotency keys abandoned by crashed server processes (>5 minutes)
+    // CRITICAL: We only reclaim in-flight keys that are NOT currently being actively processed by this Node.js instance (e.g. slow DB queries or network calls).
     const zombieIdemThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    await this.database('idempotency_keys')
+    const candidateZombieKeys = await this.database('idempotency_keys')
       .where('status_code', 0)
       .where('created_at', '<=', zombieIdemThreshold)
-      .del()
-      .catch(() => {});
+      .select('key');
+
+    const keysToPurge = candidateZombieKeys
+      .map((r: any) => r.key)
+      .filter((k: string) => !activeInFlightKeys.has(k));
+
+    if (keysToPurge.length > 0) {
+      await this.database('idempotency_keys')
+        .whereIn('key', keysToPurge)
+        .del()
+        .catch(() => {});
+    }
 
     // 3. Find pending jobs scheduled for execution
     const jobs = await this.database('outbox_jobs')
@@ -119,12 +131,14 @@ export class OutboxWorker {
    */
   private async handleJobEvent(jobId: string, eventType: string, payload: any): Promise<void> {
     const timestamp = new Date().toISOString();
+    // Deterministic notification ID based strictly on outbox jobId so retries can be deduplicated by downstream receivers
+    const notifId = `notif-${jobId}`;
     let notification: DispatchedNotification | null = null;
 
     switch (eventType) {
       case 'WORK_ITEM_CREATED': {
         notification = {
-          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          id: notifId,
           channel: 'SLACK_WEBHOOK',
           recipient: `#team-${payload.teamId || 'ops'}`,
           title: `[NEW ${payload.priority || 'NORMAL'}] Incident Created`,
@@ -136,7 +150,7 @@ export class OutboxWorker {
 
       case 'WORK_ITEM_ASSIGNED': {
         notification = {
-          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          id: notifId,
           channel: 'EMAIL',
           recipient: payload.assigneeId || 'assigned-engineer',
           title: 'Work Item Assigned',
@@ -148,7 +162,7 @@ export class OutboxWorker {
 
       case 'APPROVAL_REQUIRED': {
         notification = {
-          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          id: notifId,
           channel: 'SLACK_WEBHOOK',
           recipient: '#team-leads',
           title: '🚨 Approval Required: Work Item Waiting for Lead Sign-off',
@@ -160,7 +174,7 @@ export class OutboxWorker {
 
       case 'ITEM_RESOLVED': {
         notification = {
-          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          id: notifId,
           channel: 'SLACK_WEBHOOK',
           recipient: '#ops-resolved',
           title: '✅ Work Item Resolved',
@@ -172,7 +186,7 @@ export class OutboxWorker {
 
       case 'STATUS_CHANGED': {
         notification = {
-          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          id: notifId,
           channel: 'PUSH',
           recipient: payload.itemId,
           title: `Status Changed: ${payload.from} -> ${payload.to}`,
@@ -200,6 +214,7 @@ export class OutboxWorker {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(notification),
+          signal: AbortSignal.timeout(10000), // 10s fetch timeout to prevent worker loop hangs
         });
 
         if (!response.ok) {
@@ -208,16 +223,20 @@ export class OutboxWorker {
       }
 
       // 2. Persist delivery audit record into database table only AFTER delivery succeeds
-      await this.database('outbox_deliveries').insert({
-        id: notification.id,
-        job_id: jobId,
-        event_type: eventType,
-        channel: notification.channel,
-        recipient: notification.recipient,
-        payload: JSON.stringify(notification),
-        status: 'DELIVERED',
-        delivered_at: timestamp,
-      });
+      // Guard against duplicate primary key in case of retry
+      const existingDelivery = await this.database('outbox_deliveries').where({ id: notification.id }).first();
+      if (!existingDelivery) {
+        await this.database('outbox_deliveries').insert({
+          id: notification.id,
+          job_id: jobId,
+          event_type: eventType,
+          channel: notification.channel,
+          recipient: notification.recipient,
+          payload: JSON.stringify(notification),
+          status: 'DELIVERED',
+          delivered_at: timestamp,
+        });
+      }
 
       dispatchedNotificationsLog.push(notification);
       console.log(`[OUTBOX NOTIFICATION DELIVERED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);

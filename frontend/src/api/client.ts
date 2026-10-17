@@ -66,6 +66,20 @@ class ApiClient {
     return this.handleResponse<{ user: any }>(res);
   }
 
+  async getSetupStatus(): Promise<{ needsSetup: boolean }> {
+    const res = await fetch('/api/auth/setup-status', { headers: this.getHeaders() });
+    return this.handleResponse<{ needsSetup: boolean }>(res);
+  }
+
+  async setupInitialAdmin(payload: { name: string; email: string; password: string }): Promise<{ token: string; user: any }> {
+    const res = await fetch('/api/auth/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return this.handleResponse<{ token: string; user: any }>(res);
+  }
+
   async login(email: string, password = 'password123'): Promise<{ token: string; user: any }> {
     const res = await fetch('/api/auth/login', {
       method: 'POST',

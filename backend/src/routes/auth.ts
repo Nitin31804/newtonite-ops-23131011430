@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 import { db } from '../config/database.js';
 import { generateToken, authMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
 
@@ -120,6 +121,111 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
  */
 router.get('/me', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   res.json({ user: req.user });
+});
+
+/**
+ * Setup status endpoint (Public)
+ * Returns whether the database has 0 users and requires Day-0 admin bootstrapping
+ */
+router.get('/setup-status', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const existingUsers = await db('users').count('* as count').first().catch(() => null);
+    const userCount = Number(existingUsers?.count || 0);
+    res.json({ needsSetup: userCount === 0 });
+  } catch (error) {
+    console.error('Setup status check error:', error);
+    res.status(500).json({ error: 'Failed to verify system setup status' });
+  }
+});
+
+const setupSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters'),
+  email: z.string().email('Invalid email address format'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
+/**
+ * Initial Administrator Setup endpoint (One-Time Bootstrap)
+ * Allows creating the first administrator when the system has 0 users.
+ * Permanently locks (HTTP 403 Forbidden) once the first administrator is created.
+ */
+router.post('/setup', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const existingUsers = await db('users').count('* as count').first().catch(() => null);
+    const userCount = Number(existingUsers?.count || 0);
+
+    if (userCount > 0) {
+      res.status(403).json({
+        error: 'System setup is already completed and permanently locked. Initial administrator exists.',
+      });
+      return;
+    }
+
+    const parsed = setupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+      return;
+    }
+
+    const { name, email, password } = parsed.data;
+
+    // Ensure default core teams exist
+    const teamCount = Number((await db('teams').count('* as count').first().catch(() => null))?.count || 0);
+    if (teamCount === 0) {
+      await db('teams').insert([
+        { id: 'team-eng', name: 'Engineering & Platform', description: 'Core infrastructure, incident response, and software bugs.' },
+        { id: 'team-pay', name: 'Finance & Payment Ops', description: 'High-risk payment investigations, chargebacks, and settlement discrepancies.' },
+        { id: 'team-cmp', name: 'Legal & Compliance', description: 'Regulatory requests, AML checks, and audit investigations.' },
+        { id: 'team-ops', name: 'Customer Operations', description: 'Tier-3 customer escalation and operational triage.' },
+      ]);
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const adminId = 'usr-admin-' + uuidv4().substring(0, 8);
+    const normalizedEmail = email.toLowerCase().trim();
+
+    await db('users').insert({
+      id: adminId,
+      email: normalizedEmail,
+      name,
+      password_hash: passwordHash,
+      created_at: new Date().toISOString(),
+    });
+
+    // Assign global admin membership across all teams
+    await db('team_memberships').insert([
+      { id: uuidv4(), user_id: adminId, team_id: 'team-eng', role: 'ADMIN' },
+      { id: uuidv4(), user_id: adminId, team_id: 'team-pay', role: 'ADMIN' },
+      { id: uuidv4(), user_id: adminId, team_id: 'team-cmp', role: 'ADMIN' },
+      { id: uuidv4(), user_id: adminId, team_id: 'team-ops', role: 'ADMIN' },
+    ]);
+
+    await db('system_metadata').insert({
+      key: 'seed_completed',
+      value: 'true',
+      updated_at: new Date().toISOString(),
+    }).catch(() => {});
+
+    const token = generateToken({ id: adminId, email: normalizedEmail });
+    const memberships = await db('team_memberships')
+      .join('teams', 'team_memberships.team_id', 'teams.id')
+      .where({ 'team_memberships.user_id': adminId })
+      .select('team_memberships.team_id', 'teams.name as team_name', 'team_memberships.role');
+
+    res.status(201).json({
+      message: 'Initial administrator provisioned successfully',
+      token,
+      user: {
+        id: adminId,
+        name,
+        email: normalizedEmail,
+        memberships,
+      },
+    });
+  } catch (error) {
+    console.error('Initial setup error:', error);
+    res.status(500).json({ error: 'Failed to complete initial administrator setup' });
+  }
 });
 
 export default router;

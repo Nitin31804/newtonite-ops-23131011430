@@ -549,4 +549,133 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     expect(activeInDb).toBeTruthy();
     expect(activeInDb.status_code).toBe(0);
   });
+
+  it('Defense 25: A slow in-flight request (>5 min) actively executing in memory is NEVER deleted by the worker', async () => {
+    const { outboxWorker } = await import('../src/workers/outboxWorker.js');
+    const { activeInFlightKeys } = await import('../src/middleware/idempotency.js');
+
+    const slowActiveKey = 'slow-active-key-' + Date.now();
+    const crashedKey = 'crashed-key-' + Date.now();
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+    // Register slowActiveKey as actively executing in this Node process
+    activeInFlightKeys.add(slowActiveKey);
+
+    // Insert both keys with created_at 10 minutes ago
+    await db('idempotency_keys').insert([
+      {
+        key: slowActiveKey,
+        user_id: 'usr-eng-lead',
+        endpoint: 'POST /api/items',
+        request_payload: JSON.stringify({ title: 'Slow query' }),
+        status_code: 0,
+        response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+        created_at: tenMinutesAgo,
+      },
+      {
+        key: crashedKey,
+        user_id: 'usr-eng-lead',
+        endpoint: 'POST /api/items',
+        request_payload: JSON.stringify({ title: 'Dead process query' }),
+        status_code: 0,
+        response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+        created_at: tenMinutesAgo,
+      },
+    ]);
+
+    try {
+      await outboxWorker.processBatch();
+
+      // Crashed key (not in activeInFlightKeys) must be deleted
+      const crashedInDb = await db('idempotency_keys').where({ key: crashedKey }).first();
+      expect(crashedInDb).toBeUndefined();
+
+      // Slow active key (in activeInFlightKeys) must NOT be deleted despite being >5 minutes old
+      const slowInDb = await db('idempotency_keys').where({ key: slowActiveKey }).first();
+      expect(slowInDb).toBeTruthy();
+      expect(slowInDb.status_code).toBe(0);
+    } finally {
+      activeInFlightKeys.delete(slowActiveKey);
+    }
+  });
+
+  it('Defense 26: Outbox worker produces deterministic notification IDs across retries to prevent duplicate deliveries', async () => {
+    const { outboxWorker, dispatchedNotificationsLog } = await import('../src/workers/outboxWorker.js');
+
+    const testJobId = 'job-retry-dedup-' + Date.now();
+    await db('outbox_jobs').insert({
+      id: testJobId,
+      event_type: 'WORK_ITEM_CREATED',
+      payload: JSON.stringify({ itemId: 'wi-test', teamId: 'eng', priority: 'URGENT' }),
+      status: 'PENDING',
+      attempts: 0,
+      max_attempts: 3,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    await outboxWorker.processBatch();
+
+    const deliveredNotif = dispatchedNotificationsLog.find((n) => n.id === `notif-${testJobId}`);
+    expect(deliveredNotif).toBeTruthy();
+    expect(deliveredNotif?.id).toBe(`notif-${testJobId}`);
+
+    // Verify database record has the deterministic ID
+    const deliveryRow = await db('outbox_deliveries').where({ id: `notif-${testJobId}` }).first();
+    expect(deliveryRow).toBeTruthy();
+    expect(deliveryRow.job_id).toBe(testJobId);
+  });
+
+  it('Defense 27: Initial administrator setup succeeds on fresh 0-user database and is permanently locked (403) thereafter', async () => {
+    // Clear users and related tables to simulate fresh production database
+    await db('team_memberships').del();
+    await db('activity_events').del();
+    await db('comments').del();
+    await db('work_items').del();
+    await db('users').del();
+
+    // Verify /api/auth/setup-status reports needsSetup: true
+    const statusRes = await request(app).get('/api/auth/setup-status');
+    expect(statusRes.status).toBe(200);
+    expect(statusRes.body.needsSetup).toBe(true);
+
+    // Provision the initial administrator
+    const setupRes = await request(app)
+      .post('/api/auth/setup')
+      .send({
+        name: 'Chief Architect',
+        email: 'architect@enterprise.org',
+        password: 'SuperSecurePassword2026!',
+      });
+
+    expect(setupRes.status).toBe(201);
+    expect(setupRes.body.token).toBeTruthy();
+    expect(setupRes.body.user.email).toBe('architect@enterprise.org');
+
+    // Verify /api/auth/setup-status now reports needsSetup: false
+    const statusAfterRes = await request(app).get('/api/auth/setup-status');
+    expect(statusAfterRes.body.needsSetup).toBe(false);
+
+    // Second attempt to /api/auth/setup must be permanently locked with 403 Forbidden
+    const duplicateSetupRes = await request(app)
+      .post('/api/auth/setup')
+      .send({
+        name: 'Intruder',
+        email: 'intruder@evil.org',
+        password: 'AnotherPassword123!',
+      });
+
+    expect(duplicateSetupRes.status).toBe(403);
+    expect(duplicateSetupRes.body.error).toContain('permanently locked');
+
+    // Admin should be able to log in with the created credentials
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'architect@enterprise.org',
+        password: 'SuperSecurePassword2026!',
+      });
+    expect(loginRes.status).toBe(200);
+    expect(loginRes.body.token).toBeTruthy();
+  });
 });

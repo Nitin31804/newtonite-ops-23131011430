@@ -9,9 +9,11 @@ interface AuthContextType {
   getUserRoleInTeam: (teamId: string) => Role | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  setupAdmin: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   isAuthenticated: boolean;
   isDemoMode: boolean;
+  needsSetup: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -23,10 +25,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   useEffect(() => {
     async function loadAuth() {
       try {
+        // Check if database is fresh production with 0 users requiring initial setup
+        const status = await api.getSetupStatus().catch(() => ({ needsSetup: false }));
+        if (status?.needsSetup) {
+          setNeedsSetup(true);
+          setCurrentUser(null);
+          setUsers([]);
+          setIsLoading(false);
+          return;
+        }
+
         let token = localStorage.getItem('newtonite_jwt_token');
 
         // In demo mode: If no token exists, log in with demo evaluator credentials
@@ -111,6 +124,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const setupAdmin = async (name: string, email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await api.setupInitialAdmin({ name, email, password });
+      if (res?.token && res?.user) {
+        localStorage.setItem('newtonite_jwt_token', res.token);
+        localStorage.setItem('newtonite_active_user_id', res.user.id);
+        setCurrentUser(res.user);
+        setUsers([res.user]);
+        setNeedsSetup(false);
+        return { success: true };
+      }
+      return { success: false, error: 'Initial administrator setup failed: No token received.' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to complete administrator setup.' };
+    }
+  };
+
   const logout = () => {
     localStorage.removeItem('newtonite_jwt_token');
     localStorage.removeItem('newtonite_active_user_id');
@@ -158,9 +188,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         getUserRoleInTeam,
         isLoading,
         login,
+        setupAdmin,
         logout,
         isAuthenticated: !!currentUser,
         isDemoMode: IS_DEMO_MODE,
+        needsSetup,
       }}
     >
       {children}

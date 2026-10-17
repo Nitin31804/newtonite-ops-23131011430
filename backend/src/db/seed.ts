@@ -14,6 +14,55 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
 
   if (isProduction && !allowDemoSeed && !options.force) {
     console.warn('⚠️ [SECURITY] Production environment detected without ALLOW_DEMO_SEED=true. Skipping default demo personas seed to prevent unauthorized access with well-known passwords.');
+
+    const existingUsers = await database('users').count('* as count').first().catch(() => null);
+    const userCount = Number(existingUsers?.count || 0);
+
+    const initialAdminEmail = process.env.INITIAL_ADMIN_EMAIL;
+    const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+
+    if (userCount === 0 && initialAdminEmail && initialAdminPassword) {
+      console.log(`[BOOTSTRAP] Automated production provisioning detected for initial admin: ${initialAdminEmail}`);
+      // Ensure teams exist
+      const existingTeams = await database('teams').count('* as count').first().catch(() => null);
+      if (Number(existingTeams?.count || 0) === 0) {
+        await database('teams').insert([
+          { id: 'team-eng', name: 'Engineering & Platform', description: 'Core infrastructure, incident response, and software bugs.' },
+          { id: 'team-pay', name: 'Finance & Payment Ops', description: 'High-risk payment investigations, chargebacks, and settlement discrepancies.' },
+          { id: 'team-cmp', name: 'Legal & Compliance', description: 'Regulatory requests, AML checks, and audit investigations.' },
+          { id: 'team-ops', name: 'Customer Operations', description: 'Tier-3 customer escalation and operational triage.' },
+        ]);
+      }
+
+      const adminHash = await bcrypt.hash(initialAdminPassword, 10);
+      const adminId = 'usr-admin-' + uuidv4().substring(0, 8);
+      const normalizedEmail = initialAdminEmail.toLowerCase().trim();
+
+      await database('users').insert({
+        id: adminId,
+        email: normalizedEmail,
+        name: process.env.INITIAL_ADMIN_NAME || 'System Administrator',
+        password_hash: adminHash,
+        created_at: new Date().toISOString(),
+      });
+
+      await database('team_memberships').insert([
+        { id: uuidv4(), user_id: adminId, team_id: 'team-eng', role: 'ADMIN' },
+        { id: uuidv4(), user_id: adminId, team_id: 'team-pay', role: 'ADMIN' },
+        { id: uuidv4(), user_id: adminId, team_id: 'team-cmp', role: 'ADMIN' },
+        { id: uuidv4(), user_id: adminId, team_id: 'team-ops', role: 'ADMIN' },
+      ]);
+
+      await database('system_metadata').insert({
+        key: 'seed_completed',
+        value: 'true',
+        updated_at: new Date().toISOString(),
+      }).catch(() => {});
+
+      console.log(`[BOOTSTRAP] Successfully provisioned initial production administrator (${adminId}).`);
+    } else if (userCount === 0) {
+      console.log('ℹ️ [BOOTSTRAP] Fresh production database initialized with 0 users. First administrator can be provisioned via /api/auth/setup or INITIAL_ADMIN_EMAIL/PASSWORD environment variables.');
+    }
     return;
   }
 
