@@ -81,4 +81,36 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain('Only the assigned engineer, a Team Lead, or an Admin can transition');
   });
+
+  it('Defense 4: Helmet sets essential security headers against clickjacking, MIME sniffing, and XSS', async () => {
+    const res = await request(app).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
+  });
+
+  it('Defense 5: Authentication strictly enforces password verification and rejects empty passwords', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'admin@newtonite.internal',
+        // password omitted
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Validation failed');
+  });
+
+  it('Defense 6: Comments endpoint validates content length and blocks empty comments', async () => {
+    const res = await request(app)
+      .post('/api/items/wi-101/comments')
+      .set('x-user-id', 'usr-eng-lead')
+      .send({
+        content: '', // empty
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Validation failed');
+  });
 });

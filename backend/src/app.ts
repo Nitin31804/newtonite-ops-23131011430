@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import authRoutes from './routes/auth.js';
 import itemsRoutes from './routes/items.js';
 import teamsRoutes from './routes/teams.js';
@@ -7,6 +9,30 @@ import statsRoutes from './routes/stats.js';
 
 export function createApp() {
   const app = express();
+
+  // 1. Helmet security headers (CSP, HSTS, XSS protection, anti-clickjacking)
+  app.use(helmet());
+
+  // 2. Rate limiting (DoS & brute-force defense)
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: () => process.env.NODE_ENV === 'test',
+    message: { error: 'Rate limit exceeded: Too many requests from this IP, please try again later.' },
+  });
+  app.use('/api', apiLimiter);
+
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: () => process.env.NODE_ENV === 'test',
+    message: { error: 'Rate limit exceeded: Too many login attempts. Account temporarily throttled for 15 minutes.' },
+  });
+  app.use('/api/auth/login', loginLimiter);
 
   const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())

@@ -27,6 +27,16 @@ const updateItemSchema = z.object({
   version: z.number().int().positive('Version number must be a positive integer'),
 });
 
+const transitionSchema = z.object({
+  targetStatus: z.enum(['OPEN', 'IN_PROGRESS', 'AWAITING_APPROVAL', 'RESOLVED', 'CLOSED']),
+  reason: z.string().max(2000).optional(),
+  version: z.number().int().positive().optional(),
+});
+
+const commentSchema = z.object({
+  content: z.string().min(1, 'Comment cannot be empty').max(5000, 'Comment exceeds maximum length of 5000 characters'),
+});
+
 /**
  * List work items with server-side filtering and pagination
  */
@@ -214,12 +224,14 @@ router.patch('/:id', async (req: AuthenticatedRequest, res: Response): Promise<v
 router.post('/:id/transition', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const itemId = req.params.id;
-    const { targetStatus, reason, version } = req.body;
+    const parsed = transitionSchema.safeParse(req.body);
 
-    if (!targetStatus) {
-      res.status(400).json({ error: "'targetStatus' is required for workflow transition." });
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
       return;
     }
+
+    const { targetStatus, reason, version } = parsed.data;
 
     const existing = await db('work_items').where({ id: itemId }).first();
     if (!existing) {
@@ -279,12 +291,14 @@ router.post('/:id/transition', async (req: AuthenticatedRequest, res: Response):
 router.post('/:id/comments', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const itemId = req.params.id;
-    const { content } = req.body;
+    const parsed = commentSchema.safeParse(req.body);
 
-    if (!content || !content.trim()) {
-      res.status(400).json({ error: 'Comment content cannot be empty' });
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
       return;
     }
+
+    const { content } = parsed.data;
 
     const existing = await db('work_items').where({ id: itemId }).first();
     if (!existing) {

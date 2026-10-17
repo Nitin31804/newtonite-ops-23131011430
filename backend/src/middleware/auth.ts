@@ -3,14 +3,19 @@ import jwt from 'jsonwebtoken';
 import { db } from '../config/database.js';
 import { AuthUser, Role } from '../types/index.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'newtonite-secret-key-2026';
-
-export interface AuthenticatedRequest extends Request {
-  user?: AuthUser;
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL SECURITY CONFIGURATION: JWT_SECRET environment variable is missing in production environment!');
+    }
+    return 'newtonite-dev-secret-key-2026';
+  }
+  return secret;
 }
 
 export function generateToken(user: { id: string; email: string }): string {
-  return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ id: user.id, email: user.email }, getJwtSecret(), { expiresIn: '7d' });
 }
 
 export async function authMiddleware(
@@ -26,7 +31,7 @@ export async function authMiddleware(
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
       try {
-        const decoded = jwt.verify(token, JWT_SECRET) as { id: string; email: string };
+        const decoded = jwt.verify(token, getJwtSecret()) as { id: string; email: string };
         userId = decoded.id;
       } catch (err) {
         res.status(401).json({ error: 'Invalid or expired authentication token.' });

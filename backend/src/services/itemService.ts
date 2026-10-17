@@ -102,9 +102,10 @@ export class ItemService {
       });
     }
 
-    // Text search on title and description
+    // Text search on title and description (parameterized query + wildcard escaping)
     if (params.q) {
-      const searchTerm = `%${params.q.trim()}%`;
+      const sanitized = params.q.trim().replace(/[%_\\]/g, '\\$&');
+      const searchTerm = `%${sanitized}%`;
       query = query.where((builder) => {
         builder.where('work_items.title', 'like', searchTerm).orWhere('work_items.description', 'like', searchTerm);
       });
