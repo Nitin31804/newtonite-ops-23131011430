@@ -53,7 +53,8 @@ export const WORKFLOW_TRANSITIONS: TransitionRule[] = [
 export function validateTransition(
   currentStatus: WorkItemStatus,
   targetStatus: WorkItemStatus,
-  userRole: Role
+  userRole: Role,
+  reason?: string
 ): { valid: boolean; error?: string } {
   if (currentStatus === targetStatus) {
     return { valid: false, error: `Work item is already in status '${currentStatus}'.` };
@@ -67,6 +68,14 @@ export function validateTransition(
     return {
       valid: false,
       error: `Invalid workflow transition: Cannot transition directly from '${currentStatus}' to '${targetStatus}'.`,
+    };
+  }
+
+  // Enforce required transition rationale/reason
+  if (matchingRule.requiresReason && (!reason || reason.trim().length === 0)) {
+    return {
+      valid: false,
+      error: `Workflow Error: Transition from '${currentStatus}' to '${targetStatus}' requires an explanation or approval rationale.`,
     };
   }
 

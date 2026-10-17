@@ -5,7 +5,7 @@
 [![Express](https://img.shields.io/badge/Express-5.0-000000?style=flat-square&logo=express&logoColor=white)](https://expressjs.com/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Tests](https://img.shields.io/badge/Tests-17%20Passed-10B981?style=flat-square&logo=jest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-24%20Passed-10B981?style=flat-square&logo=jest&logoColor=white)](backend/tests/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
 I built this project as my solution to the Newtonite full-stack engineering challenge. 
@@ -121,12 +121,15 @@ I wrote automated tests covering all dangerous concurrency and authorization edg
 # Run all automated tests
 npm test
 ```
-All 17 tests pass in ~3.5 seconds.
+All 24 automated tests pass in ~4.5 seconds.
 
 To test all frontend buttons, filters, and modals end-to-end against the running server:
 ```bash
 cd backend && npx tsx tests/test-button-functionality.ts
 ```
+
+> [!NOTE]
+> **Demo Configuration & Credentials:** The default credentials and secrets in `docker-compose.yml` and the personas table below are strictly intended for local demonstration, evaluator convenience, and automated testing. In production environments, credentials should be injected securely via a secrets manager (e.g. AWS Secrets Manager, GCP Secret Manager, or HashiCorp Vault) with `ALLOW_DEV_DEMO_AUTH=false`.
 
 ---
 

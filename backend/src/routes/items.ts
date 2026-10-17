@@ -44,8 +44,20 @@ router.get('/', async (req: AuthenticatedRequest, res: Response): Promise<void> 
   try {
     const { teamId, status, priority, assigneeId, view, q, limit, offset } = req.query;
 
+    const isAdmin = req.user!.memberships.some((m) => m.role === 'ADMIN');
+    const userTeamIds = req.user!.memberships.map((m) => m.team_id);
+
+    // If specific teamId requested, verify caller has access
+    if (teamId && typeof teamId === 'string') {
+      if (!isAdmin && !userTeamIds.includes(teamId)) {
+        res.status(403).json({ error: 'Access denied: You are not a member of the requested team.' });
+        return;
+      }
+    }
+
     const result = await itemService.listItems({
       teamId: teamId as string,
+      allowedTeamIds: isAdmin ? undefined : userTeamIds,
       status: status as any,
       priority: priority as any,
       assigneeId: assigneeId as string,
@@ -153,6 +165,10 @@ router.post('/:id/claim', async (req: AuthenticatedRequest, res: Response): Prom
       res.status(409).json({ error: error.message, latestItem: error.latestItem });
       return;
     }
+    if (error instanceof BadRequestError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     if (error instanceof NotFoundError) {
       res.status(404).json({ error: error.message });
       return;
@@ -208,6 +224,10 @@ router.patch('/:id', async (req: AuthenticatedRequest, res: Response): Promise<v
   } catch (error: any) {
     if (error instanceof ConflictError) {
       res.status(409).json({ error: error.message, latestItem: error.latestItem });
+      return;
+    }
+    if (error instanceof BadRequestError) {
+      res.status(400).json({ error: error.message });
       return;
     }
     if (error instanceof NotFoundError) {
@@ -308,8 +328,8 @@ router.post('/:id/comments', async (req: AuthenticatedRequest, res: Response): P
     }
 
     const role = getUserRoleInTeam(req.user!, existing.team_id);
-    if (!role) {
-      res.status(403).json({ error: 'Access denied to this team.' });
+    if (!role || role === 'VIEWER') {
+      res.status(403).json({ error: 'Access denied: Viewers have read-only access and cannot post comments.' });
       return;
     }
 

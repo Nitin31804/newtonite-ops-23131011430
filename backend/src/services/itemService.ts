@@ -45,6 +45,7 @@ export class ItemService {
    */
   async listItems(params: {
     teamId?: string;
+    allowedTeamIds?: string[];
     status?: WorkItemStatus;
     priority?: Priority;
     assigneeId?: string;
@@ -70,6 +71,8 @@ export class ItemService {
 
     if (params.teamId) {
       query = query.where('work_items.team_id', params.teamId);
+    } else if (params.allowedTeamIds) {
+      query = query.whereIn('work_items.team_id', params.allowedTeamIds);
     }
     if (params.status) {
       query = query.where('work_items.status', params.status);
@@ -180,9 +183,9 @@ export class ItemService {
    */
   async claimItem(itemId: string, actorId: string) {
     return await db.transaction(async (trx) => {
-      // Execute conditional update: only update if assignee_id is currently NULL
+      // Execute conditional update: only update if OPEN and assignee_id is currently NULL
       const updatedRows = await trx('work_items')
-        .where({ id: itemId })
+        .where({ id: itemId, status: 'OPEN' })
         .whereNull('assignee_id')
         .update({
           assignee_id: actorId,
@@ -192,7 +195,7 @@ export class ItemService {
         });
 
       if (updatedRows === 0) {
-        // Find out why: was it missing, or already claimed?
+        // Find out why: was it missing, already claimed, or in wrong state?
         const currentItem = await trx('work_items').where({ id: itemId }).first();
         if (!currentItem) {
           throw new NotFoundError(`Work item with id '${itemId}' not found.`);
@@ -201,6 +204,11 @@ export class ItemService {
           throw new ConflictError(
             `Concurrent Claim Conflict: This work item has already been claimed by another user (Assignee ID: ${currentItem.assignee_id}).`,
             currentItem
+          );
+        }
+        if (currentItem.status !== 'OPEN') {
+          throw new BadRequestError(
+            `Workflow Violation: Cannot claim item in '${currentItem.status}' status. Only OPEN items can be claimed.`
           );
         }
       }
@@ -248,6 +256,23 @@ export class ItemService {
     }
   ) {
     return await db.transaction(async (trx) => {
+      const currentItem = await trx('work_items').where({ id: itemId }).first();
+      if (!currentItem) {
+        throw new NotFoundError(`Work item with id '${itemId}' not found.`);
+      }
+
+      // Verify that assignee belongs to the work item's team
+      if (data.assignee_id) {
+        const membership = await trx('team_memberships')
+          .where({ user_id: data.assignee_id, team_id: currentItem.team_id })
+          .first();
+        if (!membership) {
+          throw new BadRequestError(
+            `Cannot assign work item: User '${data.assignee_id}' is not a member of team '${currentItem.team_id}'.`
+          );
+        }
+      }
+
       const updatePayload: any = {
         version: db.raw('version + 1'),
         updated_at: new Date(),
@@ -262,13 +287,10 @@ export class ItemService {
         .update(updatePayload);
 
       if (updatedRows === 0) {
-        const currentItem = await trx('work_items').where({ id: itemId }).first();
-        if (!currentItem) {
-          throw new NotFoundError(`Work item with id '${itemId}' not found.`);
-        }
+        const refreshedItem = await trx('work_items').where({ id: itemId }).first();
         throw new ConflictError(
-          `Stale Update Conflict: Work item was modified by another user. Your version was ${expectedVersion}, but the server version is now ${currentItem.version}. Please refresh before updating.`,
-          currentItem
+          `Stale Update Conflict: Work item was modified by another user. Your version was ${expectedVersion}, but the server version is now ${refreshedItem?.version}. Please refresh before updating.`,
+          refreshedItem
         );
       }
 
@@ -312,7 +334,7 @@ export class ItemService {
       }
 
       // Check state machine & RBAC
-      const validation = validateTransition(currentItem.status, targetStatus, actorRole);
+      const validation = validateTransition(currentItem.status, targetStatus, actorRole, reason);
       if (!validation.valid) {
         if (validation.error?.includes('Permission denied')) {
           throw new ForbiddenError(validation.error);
@@ -384,6 +406,18 @@ export class ItemService {
     const itemId = `wi-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 
     return await db.transaction(async (trx) => {
+      // Verify that assignee belongs to the work item's team
+      if (data.assignee_id) {
+        const membership = await trx('team_memberships')
+          .where({ user_id: data.assignee_id, team_id: data.team_id })
+          .first();
+        if (!membership) {
+          throw new BadRequestError(
+            `Cannot assign work item: User '${data.assignee_id}' is not a member of team '${data.team_id}'.`
+          );
+        }
+      }
+
       const newItem: WorkItem = {
         id: itemId,
         title: data.title,

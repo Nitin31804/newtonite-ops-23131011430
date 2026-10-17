@@ -20,6 +20,7 @@ export async function idempotencyMiddleware(
 
   const userId = req.user?.id || 'anonymous';
   const endpoint = `${req.method} ${req.baseUrl}${req.path}`;
+  const requestPayload = req.body ? JSON.stringify(req.body) : '';
 
   try {
     // Check if key already exists
@@ -28,6 +29,17 @@ export async function idempotencyMiddleware(
       .first();
 
     if (existing) {
+      // Check for endpoint or payload mismatch
+      if (
+        existing.endpoint !== endpoint ||
+        (existing.request_payload && existing.request_payload !== requestPayload)
+      ) {
+        res.status(422).json({
+          error: 'Unprocessable Entity: Idempotency-Key was already used with a different request endpoint or payload.',
+        });
+        return;
+      }
+
       // If currently processing in another thread
       if (existing.status_code === 0) {
         res.status(409).json({
@@ -53,6 +65,7 @@ export async function idempotencyMiddleware(
         key: idempotencyKey,
         user_id: userId,
         endpoint,
+        request_payload: requestPayload,
         status_code: 0, // 0 = IN_FLIGHT reservation
         response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
         created_at: new Date().toISOString(),
@@ -61,6 +74,15 @@ export async function idempotencyMiddleware(
       // Primary key constraint violation: Another concurrent request claimed this key first
       const raced = await db('idempotency_keys').where({ key: idempotencyKey }).first();
       if (raced && raced.status_code > 0) {
+        if (
+          raced.endpoint !== endpoint ||
+          (raced.request_payload && raced.request_payload !== requestPayload)
+        ) {
+          res.status(422).json({
+            error: 'Unprocessable Entity: Idempotency-Key was already used with a different request endpoint or payload.',
+          });
+          return;
+        }
         res.setHeader('X-Idempotency-Hit', 'true');
         res.status(raced.status_code).json(JSON.parse(raced.response_body));
         return;
@@ -71,30 +93,34 @@ export async function idempotencyMiddleware(
       return;
     }
 
-    // Phase 2: Intercept response to update reservation with finalized response
+    // Phase 2: Intercept response and await database update BEFORE flushing to client
     const originalJson = res.json.bind(res);
-    res.json = (body: any): Response => {
+    res.json = function (body: any): Response {
       res.json = originalJson;
 
-      if (res.statusCode >= 200 && res.statusCode < 500) {
-        db('idempotency_keys')
-          .where({ key: idempotencyKey, user_id: userId })
-          .update({
-            status_code: res.statusCode,
-            response_body: JSON.stringify(body),
-          })
-          .catch((err) => {
-            console.error('Failed to update idempotency record:', err);
-          });
-      } else {
-        // Remove in-flight reservation on server errors (5xx) so user can retry safely
-        db('idempotency_keys')
-          .where({ key: idempotencyKey, user_id: userId })
-          .del()
-          .catch(() => {});
-      }
+      (async () => {
+        try {
+          if (res.statusCode >= 200 && res.statusCode < 500) {
+            await db('idempotency_keys')
+              .where({ key: idempotencyKey, user_id: userId })
+              .update({
+                status_code: res.statusCode,
+                response_body: JSON.stringify(body),
+              });
+          } else {
+            // Remove in-flight reservation on server errors (5xx) so user can retry safely
+            await db('idempotency_keys')
+              .where({ key: idempotencyKey, user_id: userId })
+              .del();
+          }
+        } catch (err) {
+          console.error('Failed to update idempotency record:', err);
+        } finally {
+          originalJson(body);
+        }
+      })();
 
-      return originalJson(body);
+      return res;
     };
 
     next();

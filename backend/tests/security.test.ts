@@ -113,4 +113,114 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Validation failed');
   });
+
+  it('Defense 7: VIEWER role cannot add comments (403 Forbidden)', async () => {
+    const res = await request(app)
+      .post('/api/items/wi-101/comments')
+      .set('x-user-id', 'usr-viewer')
+      .send({
+        content: 'Viewer attempting to add a comment',
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain('Viewers have read-only access and cannot post comments');
+  });
+
+  it('Defense 8: Assigning item to a user outside its team is rejected with 400 Bad Request', async () => {
+    // usr-cmp-1 belongs to team-cmp, not team-eng
+    const res = await request(app)
+      .patch('/api/items/wi-101')
+      .set('x-user-id', 'usr-eng-lead')
+      .send({
+        assignee_id: 'usr-cmp-1',
+        version: 1,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('is not a member of team');
+  });
+
+  it('Defense 9: Claiming an unassigned item not in OPEN status is rejected with 400 Bad Request', async () => {
+    // Set wi-104 (unassigned) to RESOLVED
+    await db('work_items').where({ id: 'wi-104' }).update({ status: 'RESOLVED', assignee_id: null });
+
+    const res = await request(app)
+      .post('/api/items/wi-104/claim')
+      .set('x-user-id', 'usr-eng-lead');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('Only OPEN items can be claimed');
+  });
+
+  it('Defense 10: Transition requiring reason without supplying reason is rejected with 400 Bad Request', async () => {
+    // IN_PROGRESS -> AWAITING_APPROVAL requires a reason
+    const res = await request(app)
+      .post('/api/items/wi-102/transition')
+      .set('x-user-id', 'usr-pay-1')
+      .send({
+        targetStatus: 'AWAITING_APPROVAL',
+        // reason omitted!
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('requires an explanation or approval rationale');
+  });
+
+  it('Defense 11: Idempotency key reused with different request payload is rejected with 422 Unprocessable Entity', async () => {
+    const key = `idem-payload-test-${Date.now()}`;
+
+    // First request
+    const res1 = await request(app)
+      .post('/api/items')
+      .set('x-user-id', 'usr-eng-lead')
+      .set('idempotency-key', key)
+      .send({
+        title: 'Original Title',
+        description: 'Original description text here',
+        type: 'incident',
+        priority: 'HIGH',
+        team_id: 'team-eng',
+      });
+    expect(res1.status).toBe(201);
+
+    // Second request with SAME key but DIFFERENT payload
+    const res2 = await request(app)
+      .post('/api/items')
+      .set('x-user-id', 'usr-eng-lead')
+      .set('idempotency-key', key)
+      .send({
+        title: 'Tampered Title with Same Key',
+        description: 'Different description text',
+        type: 'incident',
+        priority: 'LOW',
+        team_id: 'team-eng',
+      });
+
+    expect(res2.status).toBe(422);
+    expect(res2.body.error).toContain('Unprocessable Entity: Idempotency-Key was already used with a different request endpoint or payload');
+  });
+
+  it('Defense 12: GET /api/teams/:id/members rejects unauthorized non-members with 403 Forbidden', async () => {
+    // usr-eng-1 belongs to team-eng, attempting to query team-cmp members
+    const res = await request(app)
+      .get('/api/teams/team-cmp/members')
+      .set('x-user-id', 'usr-eng-1');
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain('Access denied: You are not a member of this team');
+  });
+
+  it('Defense 13: GET /api/items filters items to only the caller\'s team memberships', async () => {
+    // usr-cmp-1 belongs only to team-cmp
+    const res = await request(app)
+      .get('/api/items')
+      .set('x-user-id', 'usr-cmp-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBeGreaterThan(0);
+    // Every item returned MUST belong to team-cmp
+    for (const item of res.body.items) {
+      expect(item.team_id).toBe('team-cmp');
+    }
+  });
 });

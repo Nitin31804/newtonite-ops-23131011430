@@ -94,12 +94,19 @@ export async function initSchema(db: Knex): Promise<void> {
       table.string('key').primary();
       table.string('user_id').notNullable();
       table.string('endpoint').notNullable();
+      table.text('request_payload').nullable();
       table.integer('status_code').notNullable();
       table.text('response_body').notNullable(); // JSON string
       table.timestamp('created_at').defaultTo(db.fn.now());
 
       table.index(['created_at']);
     });
+  } else {
+    if (!(await db.schema.hasColumn('idempotency_keys', 'request_payload'))) {
+      await db.schema.alterTable('idempotency_keys', (table) => {
+        table.text('request_payload').nullable();
+      });
+    }
   }
 
   // 8. Outbox Jobs table (Transactional Outbox for reliable background processing)

@@ -18,33 +18,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    async function loadUsers() {
+    async function loadAuth() {
       try {
-        const loadedUsers = await api.getUsers();
-        setUsers(loadedUsers);
+        const loadedPersonas = await api.getPersonas();
+        setUsers(loadedPersonas);
 
-        const savedUserId = localStorage.getItem('newtonite_active_user_id');
-        const matched = loadedUsers.find((u) => u.id === savedUserId) || loadedUsers[1] || loadedUsers[0];
+        const savedUserId = localStorage.getItem('newtonite_active_user_id') || 'usr-eng-lead';
+        const matched = loadedPersonas.find((u) => u.id === savedUserId) || loadedPersonas[0];
         if (matched) {
           setCurrentUser(matched);
           localStorage.setItem('newtonite_active_user_id', matched.id);
+          try {
+            const tokenData = await api.getPersonaToken(matched.id);
+            if (tokenData?.token) {
+              localStorage.setItem('newtonite_jwt_token', tokenData.token);
+            }
+          } catch (tErr) {
+            console.warn('Could not fetch JWT token, falling back to header auth:', tErr);
+          }
         }
       } catch (err) {
-        console.error('Failed to load users:', err);
+        console.error('Failed to load personas:', err);
       } finally {
         setIsLoading(false);
       }
     }
-    loadUsers();
+    loadAuth();
   }, []);
 
-  const switchUser = (userId: string) => {
-    const user = users.find((u) => u.id === userId);
-    if (user) {
-      setCurrentUser(user);
-      localStorage.setItem('newtonite_active_user_id', user.id);
-      window.location.reload(); // Refresh to reload data under new credentials
+  const switchUser = async (userId: string) => {
+    try {
+      const tokenData = await api.getPersonaToken(userId);
+      if (tokenData?.token) {
+        localStorage.setItem('newtonite_jwt_token', tokenData.token);
+      }
+    } catch (e) {
+      console.warn('Switch user token fetch failed:', e);
     }
+    localStorage.setItem('newtonite_active_user_id', userId);
+    window.location.reload();
   };
 
   const getUserRoleInTeam = (teamId: string): Role | null => {

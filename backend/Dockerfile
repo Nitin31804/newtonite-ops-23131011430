@@ -20,8 +20,7 @@ COPY package*.json ./
 RUN npm ci --only=production
 
 COPY --from=builder /app/dist ./dist
-COPY src/db/ ./src/db/
 
 EXPOSE 4000
 
-CMD ["sh", "-c", "npx tsx src/db/seed.ts && node dist/index.js"]
+CMD ["sh", "-c", "node dist/db/seed.js && node dist/index.js"]

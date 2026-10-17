@@ -1,6 +1,17 @@
 import { Knex } from 'knex';
 import { db } from '../config/database.js';
 
+export interface DispatchedNotification {
+  id: string;
+  channel: 'EMAIL' | 'SLACK_WEBHOOK' | 'PUSH';
+  recipient: string;
+  title: string;
+  body: string;
+  timestamp: string;
+}
+
+export const dispatchedNotificationsLog: DispatchedNotification[] = [];
+
 export interface ProcessResult {
   processed: number;
   succeeded: number;
@@ -24,7 +35,18 @@ export class OutboxWorker {
     const result: ProcessResult = { processed: 0, succeeded: 0, failed: 0 };
     const nowIso = new Date().toISOString();
 
-    // Find pending jobs scheduled for execution
+    // 1. Crash recovery: Reclaim zombie jobs stuck in PROCESSING for >2 minutes
+    const zombieThreshold = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    await this.database('outbox_jobs')
+      .where('status', 'PROCESSING')
+      .where('updated_at', '<=', zombieThreshold)
+      .update({
+        status: 'PENDING',
+        last_error: 'Reclaimed from zombie PROCESSING state after worker crash or timeout.',
+        updated_at: nowIso,
+      });
+
+    // 2. Find pending jobs scheduled for execution
     const jobs = await this.database('outbox_jobs')
       .where('status', 'PENDING')
       .where('next_run_at', '<=', nowIso)
@@ -87,25 +109,85 @@ export class OutboxWorker {
    * Idempotent business handlers for outbox events
    */
   private async handleJobEvent(eventType: string, payload: any): Promise<void> {
+    const timestamp = new Date().toISOString();
+
     switch (eventType) {
-      case 'WORK_ITEM_ASSIGNED':
-        // e.g. send email or push notification to assignee
-        // Handler is idempotent: re-delivery doesn't cause harm
+      case 'WORK_ITEM_CREATED': {
+        const notification: DispatchedNotification = {
+          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          channel: 'SLACK_WEBHOOK',
+          recipient: `#team-${payload.teamId || 'ops'}`,
+          title: `[NEW ${payload.priority || 'NORMAL'}] Incident Created`,
+          body: `Work item '${payload.itemId}' created for team ${payload.teamId}.`,
+          timestamp,
+        };
+        dispatchedNotificationsLog.push(notification);
+        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
+      }
 
-      case 'APPROVAL_REQUIRED':
-        // e.g. notify all team leads of pending review
+      case 'WORK_ITEM_ASSIGNED': {
+        const notification: DispatchedNotification = {
+          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          channel: 'EMAIL',
+          recipient: payload.assigneeId || 'assigned-engineer',
+          title: 'Work Item Assigned',
+          body: `You have been assigned to work item ${payload.itemId}.`,
+          timestamp,
+        };
+        dispatchedNotificationsLog.push(notification);
+        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
+      }
 
-      case 'ITEM_RESOLVED':
-        // e.g. notify reporter that work is completed
+      case 'APPROVAL_REQUIRED': {
+        const notification: DispatchedNotification = {
+          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          channel: 'SLACK_WEBHOOK',
+          recipient: '#team-leads',
+          title: '🚨 Approval Required: Work Item Waiting for Lead Sign-off',
+          body: `Item ${payload.itemId} transitioned to AWAITING_APPROVAL. Rationale: ${payload.reason || 'None provided'}`,
+          timestamp,
+        };
+        dispatchedNotificationsLog.push(notification);
+        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
+      }
+
+      case 'ITEM_RESOLVED': {
+        const notification: DispatchedNotification = {
+          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          channel: 'SLACK_WEBHOOK',
+          recipient: '#ops-resolved',
+          title: '✅ Work Item Resolved',
+          body: `Item ${payload.itemId} was resolved. Rationale: ${payload.reason || 'Completed'}`,
+          timestamp,
+        };
+        dispatchedNotificationsLog.push(notification);
+        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
+        break;
+      }
+
+      case 'STATUS_CHANGED': {
+        const notification: DispatchedNotification = {
+          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          channel: 'PUSH',
+          recipient: payload.itemId,
+          title: `Status Changed: ${payload.from} -> ${payload.to}`,
+          body: `Item ${payload.itemId} updated to status ${payload.to}. Reason: ${payload.reason || 'N/A'}`,
+          timestamp,
+        };
+        dispatchedNotificationsLog.push(notification);
+        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
+        break;
+      }
 
       case 'TEST_FAILURE_TRIGGER':
         // Used in unit tests to simulate worker retry and failure
         throw new Error('Simulated worker processing failure for retry testing.');
 
       default:
+        console.log(`[OUTBOX] Unhandled event type: ${eventType}`);
         break;
     }
   }

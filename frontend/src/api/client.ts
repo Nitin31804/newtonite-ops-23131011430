@@ -24,6 +24,11 @@ class ApiClient {
     const activeUserId = localStorage.getItem('newtonite_active_user_id') || 'usr-eng-lead';
     headers['x-user-id'] = activeUserId;
 
+    const token = localStorage.getItem('newtonite_jwt_token');
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     if (idempotencyKey) {
       headers['idempotency-key'] = idempotencyKey;
     }
@@ -47,6 +52,20 @@ class ApiClient {
   async getStats(): Promise<StatsData> {
     const res = await fetch('/api/stats', { headers: this.getHeaders() });
     return this.handleResponse<StatsData>(res);
+  }
+
+  async getPersonas(): Promise<any[]> {
+    const res = await fetch('/api/auth/personas');
+    return this.handleResponse<any[]>(res);
+  }
+
+  async getPersonaToken(userId: string): Promise<{ token: string; user: any }> {
+    const res = await fetch('/api/auth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    });
+    return this.handleResponse<{ token: string; user: any }>(res);
   }
 
   async getUsers(): Promise<any[]> {

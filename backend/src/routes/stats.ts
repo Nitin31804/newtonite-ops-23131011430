@@ -8,22 +8,32 @@ router.use(authMiddleware);
 router.get('/', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
+    const isAdmin = req.user!.memberships.some((m) => m.role === 'ADMIN');
+    const userTeamIds = req.user!.memberships.map((m) => m.team_id);
 
-    // Run parallel count queries for dashboard metrics
+    const baseQuery = () => {
+      const q = db('work_items');
+      if (!isAdmin) {
+        q.whereIn('team_id', userTeamIds);
+      }
+      return q;
+    };
+
+    // Run parallel count queries for dashboard metrics scoped to caller's authorized teams
     const [total, unassignedUrgent, assignedToMe, awaitingApproval] = await Promise.all([
-      db('work_items').count('* as count').first(),
-      db('work_items')
+      baseQuery().count('* as count').first(),
+      baseQuery()
         .whereNull('assignee_id')
         .whereIn('priority', ['URGENT', 'HIGH'])
         .whereIn('status', ['OPEN', 'IN_PROGRESS'])
         .count('* as count')
         .first(),
-      db('work_items')
+      baseQuery()
         .where('assignee_id', userId)
         .whereNotIn('status', ['CLOSED'])
         .count('* as count')
         .first(),
-      db('work_items').where('status', 'AWAITING_APPROVAL').count('* as count').first(),
+      baseQuery().where('status', 'AWAITING_APPROVAL').count('* as count').first(),
     ]);
 
     res.json({

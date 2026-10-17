@@ -6,10 +6,38 @@ import { generateToken, authMiddleware, AuthenticatedRequest } from '../middlewa
 const router = Router();
 
 /**
- * List all users and their team roles.
- * Allows quick persona switching for demonstration and testing.
+ * Public minimal personas endpoint for the demo switcher
+ * Returns only id, name, and team roles (no sensitive emails or private data)
  */
-router.get('/users', async (req: Request, res: Response) => {
+router.get('/personas', async (req: Request, res: Response) => {
+  try {
+    const users = await db('users').select('id', 'name');
+    const memberships = await db('team_memberships')
+      .join('teams', 'team_memberships.team_id', 'teams.id')
+      .select(
+        'team_memberships.user_id',
+        'team_memberships.team_id',
+        'teams.name as team_name',
+        'team_memberships.role'
+      );
+
+    const result = users.map((u) => ({
+      id: u.id,
+      name: u.name,
+      memberships: memberships.filter((m) => m.user_id === u.id),
+    }));
+
+    res.json(result);
+  } catch (error) {
+    console.error('List personas error:', error);
+    res.status(500).json({ error: 'Failed to load personas' });
+  }
+});
+
+/**
+ * List all users and their team roles (Protected by Authentication)
+ */
+router.get('/users', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const users = await db('users').select('id', 'name', 'email');
     const memberships = await db('team_memberships')
@@ -30,6 +58,44 @@ router.get('/users', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('List users error:', error);
     res.status(500).json({ error: 'Failed to load users' });
+  }
+});
+
+/**
+ * Generate JWT for demo persona switching or direct API client authentication
+ */
+router.post('/token', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.body.userId || req.body.id;
+    if (!userId) {
+      res.status(400).json({ error: 'userId is required' });
+      return;
+    }
+
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    const token = generateToken({ id: user.id, email: user.email });
+    const memberships = await db('team_memberships')
+      .join('teams', 'team_memberships.team_id', 'teams.id')
+      .where({ 'team_memberships.user_id': user.id })
+      .select('team_memberships.team_id', 'teams.name as team_name', 'team_memberships.role');
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        memberships,
+      },
+    });
+  } catch (error) {
+    console.error('Token generation error:', error);
+    res.status(500).json({ error: 'Failed to generate token' });
   }
 });
 
