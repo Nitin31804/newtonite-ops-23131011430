@@ -1,151 +1,143 @@
 # Engineering Decisions & Architectural Trade-offs
 
-This document details five fundamental architectural decisions made in designing and implementing the **Newtonite Operations Platform** ("Operations Under Pressure"). For each decision, we provide the business and operational context, the alternative options considered, the chosen solution, and the explicit trade-offs accepted.
+When designing this system for Newtonite, my main priority was **predictable behavior under pressure**. In operational environments, when things go wrong, they tend to go wrong concurrently. 
+
+Below are the five key decisions I made, the alternatives I considered, and the trade-offs I knowingly accepted.
 
 ---
 
-## 1. Concurrency Control: Optimistic Locking with Atomic Conditional Claims
+## 1. Concurrency Control: Optimistic Locking + Conditional SQL Claims
 
-### Context
-In high-throughput operational environments, multiple agents or engineers often view and interact with the same critical work items simultaneously. Two specific failure modes emerge:
-1. **Double Claiming Race Condition:** Two engineers simultaneously click "Claim" on an unassigned urgent incident.
-2. **Stale Overwrite / Lost Update:** Engineer A begins modifying an item based on outdated information while Engineer B has already resolved or escalated it.
+### The Problem
+During an incident, two engineers often view the same ticket. If both try to claim it, or both try to edit it at the same time, naive CRUD apps either double-assign the work or allow the slower user to blindly overwrite the faster user's changes.
 
-### Options Considered
+### Options I Considered
 1. **Pessimistic Row Locking (`SELECT ... FOR UPDATE`):**
-   * *Pros:* Holds an exclusive database lock across the duration of user reading and drafting edits.
-   * *Cons:* Causes dangerous connection pool exhaustion, latency spikes, and deadlocks if a user takes minutes to complete a form or disconnects unexpectedly.
-2. **Last-Write-Wins (Uncontrolled CRUD):**
-   * *Pros:* Easiest to implement.
-   * *Cons:* Silent data loss and complete operational chaos—explicitly rejected by the brief.
-3. **Optimistic Locking with Version Number + Atomic Conditional SQL Updates:**
-   * *Pros:* Non-blocking, highly performant, scalable across thousands of concurrent users, zero risk of lock starvation.
-   * *Cons:* Requires clients to handle retry/reload loops when a conflict (HTTP 409) occurs.
+   - *Why I avoided it:* Holding an exclusive database lock while a human is typing an edit in their browser is dangerous. If their laptop sleeps, the network drops, or they step away for coffee, the database connection pool exhausts and everyone else gets blocked.
+2. **Distributed Redis Locks (Redlock):**
+   - *Why I avoided it:* Adds unnecessary operational complexity, another infrastructure piece to monitor, and tricky lock-expiry corner cases during GC pauses or network partitions.
+3. **Optimistic Versioning + Conditional Atomic Writes:**
+   - *My choice:* Keep locking strictly inside the relational database engine using standard SQL.
 
-### Chosen Solution
-* **Atomic Claiming:** Executed via a single atomic conditional SQL statement:
+### What I Implemented
+- **Atomic Claiming:** 
   ```sql
   UPDATE work_items 
-  SET assignee_id = :userId, status = 'IN_PROGRESS', version = version + 1, updated_at = NOW() 
+  SET assignee_id = :userId, status = 'IN_PROGRESS', version = version + 1, updated_at = CURRENT_TIMESTAMP
   WHERE id = :itemId AND assignee_id IS NULL;
   ```
-  If zero rows are updated, the database transaction detects the race condition and returns HTTP `409 Conflict` with the current owner's details.
-* **Optimistic Versioning on Mutations:** All mutable updates supply the item's expected `version`. The update is conditioned on `WHERE id = :id AND version = :expectedVersion`. If mismatched, it rejects the mutation with HTTP `409 Conflict` and returns the latest server state, prompting the frontend to reload without overwriting changes.
+  If zero rows are updated, someone else got there first. The backend immediately returns `409 Conflict: "Item already claimed by another team member"`.
+- **Optimistic Versioning on Edits:** Every update requires `WHERE id = :id AND version = :expectedVersion`. If the version doesn't match, the update is rejected with `409 Conflict`, and the server returns the fresh record so the frontend can reload without data loss.
 
-### Trade-offs
-* **Accepted Cost:** Increased frontend responsibility to gracefully handle 409 errors (via conflict banners and automatic state rollback). Under extreme write contention on a single item, some users will experience retries.
-* **Gained Benefit:** Completely deadlock-free database operation, maximum query throughput, and guaranteed data consistency under heavy concurrency.
-
----
-
-## 2. Audit Trail: Transactional Append-Only Event Log
-
-### Context
-Operational incidents, payment disputes, and compliance inquiries require an unalterable history of who changed what, why an approval was given, and when status transitions occurred. In legacy systems, activity history often drifts out of sync with actual database records due to partial network failures.
-
-### Options Considered
-1. **Asynchronous Audit Logging via Message Queue:**
-   * *Pros:* Zero latency overhead on the primary write path.
-   * *Cons:* Dual-write problem: if the queue publish fails after the DB commit, or if the queue is delayed, the audit trail falls out of sync or permanently drops critical regulatory actions.
-2. **Database Change-Data-Capture (CDC / Debezium):**
-   * *Pros:* Decoupled from application logic.
-   * *Cons:* Operational complexity overhead, infrastructure bloat, difficult to capture user intention/reasons.
-3. **In-Transaction Append-Only `activity_events` Table:**
-   * *Pros:* Atomically guaranteed via ACID transaction boundaries. The item update and the audit log record either succeed together or fail together.
-   * *Cons:* Slight additional latency per write operation due to the secondary insert.
-
-### Chosen Solution
-All state transitions, claims, edits, and comments are persisted into an append-only `activity_events` table inside the **exact same database transaction** as the primary `work_items` mutation. If any error occurs, the entire transaction rolls back.
-
-### Trade-offs
-* **Accepted Cost:** Write latency increases by a few milliseconds to write to two indexed tables instead of one. The `activity_events` table will grow rapidly over time.
-* **Gained Benefit:** Absolute audit integrity. The audit log can never disagree with the current state of a work item, satisfying SOC2/GDPR compliance standards. At scale, table partitioning on `created_at` or archiving strategies can easily manage storage.
+### Trade-off
+- **The cost:** The frontend has to be smart enough to handle 409 responses and prompt the user to refresh.
+- **The gain:** Deadlock-free, zero lock starvation, and high database throughput under heavy load.
 
 ---
 
-## 3. Network Resilience: Request Idempotency via `Idempotency-Key`
+## 2. Audit Trail: In-Transaction Append-Only Event Log
 
-### Context
-Network jitter, client timeouts, or users double-clicking submit buttons during urgent operations can trigger duplicate POST requests, risking duplicate investigations, double payouts, or duplicate escalation tickets.
+### The Problem
+In financial investigations and compliance audits, management needs an unalterable history of who changed what, why an approval was given, and when an incident was resolved. If the audit log can ever disagree with the current ticket state, the platform cannot be trusted.
 
-### Options Considered
-1. **Frontend Button Debouncing / Disabling:**
-   * *Pros:* Easy to implement.
-   * *Cons:* Only defends against happy-path client browser clicks; completely ineffective against network packet retries, proxy retransmissions, or multi-tab usage.
-2. **Distributed Redis Deduplication Cache:**
-   * *Pros:* High throughput.
-   * *Cons:* Adds an external infrastructure dependency; cache eviction could allow duplicate requests if retried after Redis TTL.
-3. **Database-Backed Idempotency Middleware (`idempotency_keys` Table):**
-   * *Pros:* Durable, persistent across restarts, transactional, zero extra infrastructure.
-   * *Cons:* Storage overhead for request/response bodies.
+### Options I Considered
+1. **Asynchronous Audit Logging via Message Queue (Kafka/RabbitMQ):**
+   - *Why I avoided it:* Introduces the classic dual-write failure mode. If the queue publish fails after the database commits, the audit record is lost permanently.
+2. **Change-Data-Capture (CDC / Debezium):**
+   - *Why I avoided it:* Powerful, but way too heavy for an assessment project; adds infrastructure overhead and doesn't capture user intent/rationale easily.
+3. **In-Transaction `activity_events` Table:**
+   - *My choice:* Write the audit record inside the exact same database transaction as the update.
 
-### Chosen Solution
-Mutating endpoints (`POST /api/items`, state transitions) accept an `Idempotency-Key` HTTP header (automatically generated by clients per action). The server checks the `idempotency_keys` table:
-* If the key exists for the user, the server intercepts execution and immediately returns the cached status code and response payload with header `X-Idempotency-Hit: true`.
-* If new, the request is executed, and the resulting response is persisted atomically for future replays.
+### What I Implemented
+Every state change, claim, edit, or comment writes to `activity_events` inside a single ACID transaction:
+```typescript
+await db.transaction(async (trx) => {
+  await trx('work_items').where({ id }).update(...);
+  await trx('activity_events').insert({
+    work_item_id: id,
+    actor_id: userId,
+    event_type: 'STATUS_CHANGED',
+    details: JSON.stringify({ from: oldStatus, to: newStatus, reason })
+  });
+});
+```
 
-### Trade-offs
-* **Accepted Cost:** Minor DB storage overhead for cached payloads.
-* **Gained Benefit:** Safe retries across unreliable networks without risking phantom ticket creation or duplicate operations.
-
----
-
-## 4. Authorization & Workflow Governance: Server-Side Enforced RBAC with Lead Approval Gate
-
-### Context
-Newtonite consists of multiple teams (Engineering, Finance & Payments, Legal & Compliance, Customer Operations) where members possess distinct responsibilities (Viewer, Member, Lead, Admin). Critical compliance and financial investigations must not be closed or resolved by unverified members without team lead review.
-
-### Options Considered
-1. **Client-Side Permission Gating:**
-   * *Pros:* Fast UI rendering.
-   * *Cons:* Fatal security flaw—anyone with Postman or `curl` can bypass client UI checks and approve tickets.
-2. **Centralized Attribute-Based Access Control (ABAC) Engine:**
-   * *Pros:* Maximum enterprise flexibility.
-   * *Cons:* Extreme complexity and unnecessary latency for a focused operational workflow.
-3. **Role-Based Access Control (RBAC) Scoped per Team at API Boundary with State Machine Guards:**
-   * *Pros:* Enforced strictly on every API endpoint, isolated per team, explicit state machine transitions.
-   * *Cons:* Requires verifying user team memberships on every incoming request.
-
-### Chosen Solution
-* Authorization is evaluated exclusively on the server in `src/middleware/auth.ts`.
-* Team membership is verified on every resource access: users outside the team receive `403 Forbidden` (unless they hold the global `ADMIN` role).
-* **Strict State Machine:** Transitions are governed by `validateTransition()`. While `MEMBER` can move items from `OPEN` to `IN_PROGRESS` and `AWAITING_APPROVAL`, only a `LEAD` of that specific team (or an `ADMIN`) can transition an item from `AWAITING_APPROVAL` to `RESOLVED`. Direct status skips (e.g. `OPEN` $\rightarrow$ `CLOSED`) are rejected with `400 Bad Request`.
-
-### Trade-offs
-* **Accepted Cost:** Strict transition rules prevent informal ad-hoc workflow shortcuts.
-* **Gained Benefit:** Guaranteed organizational compliance and audit accountability. Malicious or accidental unauthorized status jumps are physically impossible.
+### Trade-off
+- **The cost:** Slightly higher write latency because each action requires two database writes instead of one.
+- **The gain:** Absolute audit integrity. A ticket status cannot change without an audit record, and an audit record cannot exist without the status change.
 
 ---
 
-## 5. Secondary Side-Effects: Transactional Outbox Pattern for Async Jobs
+## 3. Network Resilience: 2-Phase Idempotency
 
-### Context
-When work items are assigned, escalated, or require approval, secondary actions must take place (such as notifying team leads, alerting on-call engineers, or triggering webhooks). Executing external network calls synchronously during the HTTP request degrades latency and risks partial failures (e.g., database succeeds, but email server is down).
+### The Problem
+When operators work under stress or with poor connectivity, they frequently double-click buttons or retry requests after a timeout. Naive APIs end up inserting two duplicate production incident tickets or double-processing disputes.
 
-### Options Considered
-1. **Synchronous In-Request Notifications:**
-   * *Pros:* Simple to code.
-   * *Cons:* Severely degrades API response times. If the third-party notification service times out or is down, the user's primary database save fails or hangs.
-2. **Fire-and-Forget In-Memory Async Callbacks:**
-   * *Pros:* Non-blocking for the user.
-   * *Cons:* If the application server crashes or restarts mid-flight, notifications are permanently lost with no retry mechanism.
-3. **Transactional Outbox Table with Idempotent Background Worker:**
-   * *Pros:* Guarantees "at-least-once" delivery. Outbox events are written in the same DB transaction as the item update. If the worker encounters a failure, it retries with exponential backoff up to a maximum attempt limit.
-   * *Cons:* Slight delay (polling interval of 1–3s) before the secondary job executes.
+### Options I Considered
+1. **Frontend Button Disabling / Debouncing:**
+   - *Why it's insufficient:* It only stops polite browser double-clicks. It does nothing against network retries, browser tab reloads, or proxy retries.
+2. **Database-Backed Idempotency Middleware (`idempotency_keys` Table):**
+   - *My choice:* Two-phase reservation directly in SQL.
 
-### Chosen Solution
-The system employs the **Transactional Outbox Pattern**:
-* When an item is created, claimed, or transitioned, an `outbox_jobs` row is inserted inside the same database transaction.
-* An `OutboxWorker` polls for `PENDING` jobs, optimistically claims them by setting `PROCESSING`, and dispatches the notification.
-* If a failure occurs, the worker increments `attempts`, sets an exponential backoff timestamp (`2^attempts * 5s`), and caps at `max_attempts` (marking `FAILED` for dead-letter triage).
+### What I Implemented
+1. **Phase 1 (Reservation):** On request arrival, the server inserts the key with `status_code = 0` (in-flight marker). If two requests hit the API within 2 milliseconds, the database unique constraint blocks the second one immediately.
+2. **Phase 2 (Cache):** When the handler finishes, the status code and JSON response are saved against the key. Retried requests return the cached response without running business logic again.
 
-### Trade-offs
-* **Accepted Cost:** Eventual consistency for notifications (seconds of latency) rather than instantaneous delivery.
-* **Gained Benefit:** Complete decoupling of write throughput from external notification reliability; 100% resilience against server restarts and temporary network outages.
+### Trade-off
+- **The cost:** Minimal storage overhead to store recent request keys and responses (which can be TTL-purged after 24 hours).
+- **The gain:** Total safety against network retries and duplicate operations.
 
 ---
 
-## Summary of Deliberate Non-Goals (What We Chose NOT to Build)
-1. **Public User Registration / Password Reset:** Seeded accounts cover all enterprise roles. Self-signup is irrelevant for internal operations tooling.
-2. **WebSocket Real-Time Subscriptions:** WebSocket connection management introduces significant memory overhead and complex reconnection handling. Server-side cursor pagination with client refetch/polling is far more resilient and scalable.
-3. **Complex Multi-Tenancy Organizations:** A single-organization multi-team model perfectly matches Newtonite's requirements without over-engineering cross-org billing boundaries.
+## 4. Authorization: Scoped RBAC per Team and Resource
+
+### The Problem
+A user might be an Engineering Lead with approval rights, but they should not be approving Legal GDPR deletions or viewing confidential Payment dispute records.
+
+### Options I Considered
+1. **Global Role (Admin / User / Viewer):**
+   - *Why I rejected it:* Too coarse-grained. Real companies have multiple teams where a user has different responsibilities in different contexts.
+2. **Per-Team Scoped Roles (`team_memberships`):**
+   - *My choice:* A user belongs to one or more teams with a specific role in each (`VIEWER`, `MEMBER`, `LEAD`), plus a global `ADMIN` role.
+
+### What I Implemented
+- Authorization is evaluated on the server inside route middleware, never relying on hidden frontend buttons.
+- Any mutation checks:
+  1. Does the user belong to the item's team?
+  2. Does their role in that team allow this action (e.g., only `LEAD` can approve `AWAITING_APPROVAL ➔ RESOLVED`)?
+  3. If assigned, is the caller the assignee (or a Lead)?
+
+### Trade-off
+- **The cost:** Slightly more complex middleware and extra join queries on authentication.
+- **The gain:** Clean separation of concerns and zero risk of cross-team privilege escalation.
+
+---
+
+## 5. Async Processing: Transactional Outbox Pattern
+
+### The Problem
+When a high-priority incident is created or resolved, secondary actions need to happen: notifying team channels, dispatching webhooks, or logging to monitoring tools.
+- Calling external webhooks inside the database transaction slows down the DB and fails the whole transaction if Slack is slow.
+- Calling external webhooks after the transaction risks losing the notification if the Node.js server restarts right after committing.
+
+### Options I Considered
+1. **Synchronous Inline Calls:**
+   - *Why I avoided it:* Fragile and tightly couples our API latency to third-party availability.
+2. **Transactional Outbox Table + Background Poller:**
+   - *My choice:* Write the job row into `outbox_jobs` in the same transaction as the ticket update, and process it asynchronously.
+
+### What I Implemented
+- The status update and the notification job are committed together atomically.
+- A lightweight background worker polls `outbox_jobs` every 3 seconds, dispatches the event, and uses exponential backoff (1s, 2s, 4s, 8s) with a 5-attempt cap.
+- The worker claims jobs using atomic status updates to prevent duplicate execution across multiple backend replicas.
+
+### Trade-off
+- **The cost:** Notifications are eventually consistent (delayed by up to ~1-3 seconds).
+- **The gain:** The core API responds in milliseconds, database transactions are short, and no notification is ever lost if an external service is temporarily down.
+
+---
+
+## Summary of Known Limitations & What I'd Build Next
+- **Search:** Currently uses SQL `LIKE`. For millions of items, I'd migrate to PostgreSQL `tsvector` with GIN indexing.
+- **Table Partitioning:** The append-only `activity_events` table will grow indefinitely; range-partitioning by month (`created_at`) would keep query latency constant.
+- **Real-Time Collaboration:** Adding Server-Sent Events (SSE) would alert users in real time when someone else opens or claims an item they are looking at.
