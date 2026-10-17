@@ -19,7 +19,8 @@ export async function idempotencyMiddleware(
   }
 
   const userId = req.user?.id || 'anonymous';
-  const endpoint = `${req.method} ${req.baseUrl}${req.path}`;
+  const rawPath = `${req.baseUrl}${req.path}`.replace(/\/+$/, '') || '/';
+  const endpoint = `${req.method} ${rawPath}`;
   const requestPayload = req.body ? JSON.stringify(req.body) : '';
 
   try {
@@ -40,21 +41,13 @@ export async function idempotencyMiddleware(
         return;
       }
 
-      // If currently marked in-flight (status_code === 0)
+      // If currently marked in-flight (status_code === 0), concurrent requests MUST wait
+      // Never delete an in-flight key based on arbitrary elapsed time, as slow operations may still be executing or committing
       if (existing.status_code === 0) {
-        // Reclaim stranded/zombie in-flight keys older than 30 seconds
-        const createdAt = new Date(existing.created_at).getTime();
-        const isStale = Date.now() - createdAt > 30 * 1000;
-        if (isStale) {
-          await db('idempotency_keys')
-            .where({ key: idempotencyKey, user_id: userId })
-            .del();
-        } else {
-          res.status(409).json({
-            error: 'Concurrent Request Conflict: An identical request with this Idempotency-Key is currently in-flight.',
-          });
-          return;
-        }
+        res.status(409).json({
+          error: 'Concurrent Request Conflict: An identical request with this Idempotency-Key is currently in-flight.',
+        });
+        return;
       }
 
       if (existing.status_code > 0) {
@@ -103,6 +96,18 @@ export async function idempotencyMiddleware(
       });
       return;
     }
+
+    // Free the in-flight key if the client connection is aborted abruptly before response finishes
+    req.on('close', async () => {
+      if (!res.writableEnded) {
+        try {
+          const current = await db('idempotency_keys').where({ key: idempotencyKey, user_id: userId }).first();
+          if (current && current.status_code === 0) {
+            await db('idempotency_keys').where({ key: idempotencyKey, user_id: userId }).del();
+          }
+        } catch {}
+      }
+    });
 
     // Phase 2: Intercept response and await database update BEFORE flushing to client
     const originalJson = res.json.bind(res);

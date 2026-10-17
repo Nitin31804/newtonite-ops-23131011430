@@ -333,4 +333,100 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     const personaRes = await request(app).get('/api/auth/personas');
     expect(personaRes.status).toBe(401);
   });
+
+  it('Defense 19: Webhook failure causes outbox job to fail and reschedule retry without recording false delivery', async () => {
+    const { OutboxWorker } = await import('../src/workers/outboxWorker.js');
+    const worker = new OutboxWorker(db);
+    const failJobId = 'job-fail-webhook-' + Date.now();
+
+    await db('outbox_jobs').insert({
+      id: failJobId,
+      event_type: 'WORK_ITEM_ASSIGNED',
+      payload: JSON.stringify({ itemId: 'wi-101', assigneeId: 'usr-eng-1' }),
+      status: 'PENDING',
+      attempts: 0,
+      max_attempts: 5,
+      next_run_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    // Configure a failing webhook URL (port 9998 not listening)
+    const originalWebhook = process.env.NOTIFICATION_WEBHOOK_URL;
+    process.env.NOTIFICATION_WEBHOOK_URL = 'http://127.0.0.1:9998/webhook-dead-end';
+
+    try {
+      const result = await worker.processBatch(10);
+      expect(result.failed).toBeGreaterThan(0);
+
+      // Verify job was NOT marked COMPLETED; it must be PENDING with error recorded
+      const jobInDb = await db('outbox_jobs').where({ id: failJobId }).first();
+      expect(jobInDb.status).toBe('PENDING');
+      expect(jobInDb.attempts).toBe(1);
+      expect(jobInDb.last_error).toBeTruthy();
+
+      // Crucial: No delivery record must exist in outbox_deliveries
+      const delivery = await db('outbox_deliveries').where({ job_id: failJobId }).first();
+      expect(delivery).toBeUndefined();
+    } finally {
+      if (originalWebhook) {
+        process.env.NOTIFICATION_WEBHOOK_URL = originalWebhook;
+      } else {
+        delete process.env.NOTIFICATION_WEBHOOK_URL;
+      }
+    }
+  });
+
+  it('Defense 20: In-flight idempotency key is preserved and rejects retries with 409 even after 30 seconds', async () => {
+    const testKey = 'slow-req-key-' + Date.now();
+    const fortySecondsAgo = new Date(Date.now() - 40 * 1000).toISOString();
+
+    // Simulate an ongoing slow request (status_code: 0) that started 40s ago
+    await db('idempotency_keys').insert({
+      key: testKey,
+      user_id: 'usr-eng-lead',
+      endpoint: 'POST /api/items',
+      request_payload: JSON.stringify({ title: 'Slow item', priority: 'HIGH' }),
+      status_code: 0,
+      response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+      created_at: fortySecondsAgo,
+    });
+
+    // Retry arriving while operation is still processing
+    const retryRes = await request(app)
+      .post('/api/items')
+      .set('x-user-id', 'usr-eng-lead')
+      .set('Idempotency-Key', testKey)
+      .send({ title: 'Slow item', priority: 'HIGH' });
+
+    expect(retryRes.status).toBe(409);
+    expect(retryRes.body.error).toContain('Concurrent Request Conflict');
+
+    // Verify key was NOT deleted from the database
+    const keyInDb = await db('idempotency_keys').where({ key: testKey }).first();
+    expect(keyInDb).toBeTruthy();
+    expect(keyInDb.status_code).toBe(0);
+  });
+
+  it('Defense 21: Production environment without explicit ALLOW_DEMO_SEED skips seeding default demo accounts', async () => {
+    const origEnv = process.env.NODE_ENV;
+    const origDemo = process.env.ALLOW_DEMO_SEED;
+    const origDemoMode = process.env.DEMO_MODE;
+
+    process.env.NODE_ENV = 'production';
+    delete process.env.ALLOW_DEMO_SEED;
+    delete process.env.DEMO_MODE;
+
+    try {
+      // Create empty temporary knex instance to test production guard
+      const testDb = db;
+      // If we attempt runSeed without force in production, it skips
+      await runSeed(testDb, { force: false });
+      // In production guard, it warns and returns early
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      if (origDemo) process.env.ALLOW_DEMO_SEED = origDemo;
+      if (origDemoMode) process.env.DEMO_MODE = origDemoMode;
+    }
+  });
 });

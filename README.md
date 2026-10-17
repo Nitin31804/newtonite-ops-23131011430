@@ -5,7 +5,7 @@
 [![Express](https://img.shields.io/badge/Express-5.0-000000?style=flat-square&logo=express&logoColor=white)](https://expressjs.com/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Tests](https://img.shields.io/badge/Tests-29%20Passed-10B981?style=flat-square&logo=jest&logoColor=white)](backend/tests/)
+[![Tests](https://img.shields.io/badge/Tests-32%20Passed-10B981?style=flat-square&logo=jest&logoColor=white)](backend/tests/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
 I built this project as my solution to the Newtonite full-stack engineering challenge. 
@@ -121,7 +121,7 @@ I wrote automated tests covering all dangerous concurrency and authorization edg
 # Run all automated tests
 npm test
 ```
-All 29 automated tests pass in ~4 seconds.
+All 32 automated tests pass in ~4 seconds.
 
 To test all frontend buttons, filters, and modals end-to-end against the running server:
 ```bash
@@ -129,7 +129,9 @@ cd backend && npx tsx tests/test-button-functionality.ts
 ```
 
 > [!NOTE]
-> **Demo Configuration & Credentials:** The default credentials and secrets in `docker-compose.yml` and the personas table below are strictly intended for local demonstration, evaluator convenience, and automated testing. In production environments, credentials should be injected securely via a secrets manager (e.g. AWS Secrets Manager, GCP Secret Manager, or HashiCorp Vault) with `ALLOW_DEV_DEMO_AUTH=false`.
+> **Demo Configuration vs Production Deployment:** 
+> - **Local Evaluation / Demo Mode:** `docker-compose.yml` defaults to local demonstration mode (`DEMO_MODE=true`, `ALLOW_DEMO_SEED=true`, `NODE_ENV=development`) with the pre-seeded personas and 1-click switcher for evaluator convenience.
+> - **Production Deployment:** To deploy as a production service, override the environment variables: set `NODE_ENV=production`, `DEMO_MODE=false`, `ALLOW_DEMO_SEED=false`, and inject strong random credentials for `POSTGRES_PASSWORD` and `JWT_SECRET`. The backend seeder actively refuses to seed default demo passwords when `NODE_ENV=production` without explicit authorization.
 
 ---
 

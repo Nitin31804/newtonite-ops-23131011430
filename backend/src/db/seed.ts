@@ -8,28 +8,29 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
   console.log('--- Initializing Database Schema ---');
   await initSchema(database);
 
-  // Check if database is already populated
-  const existingUsers = await database('users').count('* as count').first();
-  const userCount = Number(existingUsers?.count || 0);
+  // Security check: Guard against accidental seeding of demo credentials in production
+  const isProduction = process.env.NODE_ENV === 'production';
+  const allowDemoSeed = process.env.ALLOW_DEMO_SEED === 'true' || process.env.DEMO_MODE === 'true';
 
-  if (userCount > 0 && !options.force && process.env.FORCE_RESEED !== 'true') {
-    console.log(`Database already contains ${userCount} users. Skipping seed to preserve operational data.`);
+  if (isProduction && !allowDemoSeed && !options.force) {
+    console.warn('⚠️ [SECURITY] Production environment detected without ALLOW_DEMO_SEED=true. Skipping default demo personas seed to prevent unauthorized access with well-known passwords.');
     return;
   }
 
-  console.log('--- Seeding Database ---');
+  // Check if database is already fully populated and seed has completed
+  const seedMarker = await database('system_metadata').where({ key: 'seed_completed' }).first().catch(() => null);
+  const existingUsers = await database('users').count('* as count').first().catch(() => null);
+  const userCount = Number(existingUsers?.count || 0);
 
-  // Clear existing data in reverse order of foreign keys
-  await database('comments').del();
-  await database('activity_events').del();
-  await database('outbox_jobs').del();
-  await database('idempotency_keys').del();
-  await database('work_items').del();
-  await database('team_memberships').del();
-  await database('teams').del();
-  await database('users').del();
+  if (seedMarker?.value === 'true' && userCount > 0 && !options.force && process.env.FORCE_RESEED !== 'true') {
+    console.log(`Database already contains ${userCount} users with verified seed completion. Skipping seed to preserve operational data.`);
+    return;
+  }
 
-  const passwordHash = await bcrypt.hash('password123', 10);
+  console.log('--- Seeding Database (Atomic Transaction) ---');
+
+  const defaultPassword = process.env.DEMO_USER_PASSWORD || 'password123';
+  const passwordHash = await bcrypt.hash(defaultPassword, 10);
 
   // 1. Teams
   const teams = [
@@ -38,7 +39,6 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
     { id: 'team-cmp', name: 'Legal & Compliance', description: 'Regulatory requests, AML checks, and audit investigations.' },
     { id: 'team-ops', name: 'Customer Operations', description: 'Tier-3 customer escalation and operational triage.' },
   ];
-  await database('teams').insert(teams);
 
   // 2. Users
   const users = [
@@ -53,7 +53,6 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
     { id: 'usr-ops-1', email: 'ops.member@newtonite.internal', name: 'Jordan Hayes (Ops Specialist)', password_hash: passwordHash },
     { id: 'usr-viewer', email: 'viewer@newtonite.internal', name: 'Taylor Reed (Auditor / Viewer)', password_hash: passwordHash },
   ];
-  await database('users').insert(users);
 
   // 3. Team Memberships
   const memberships = [
@@ -85,7 +84,6 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
     { id: uuidv4(), user_id: 'usr-viewer', team_id: 'team-cmp', role: 'VIEWER' },
     { id: uuidv4(), user_id: 'usr-viewer', team_id: 'team-ops', role: 'VIEWER' },
   ];
-  await database('team_memberships').insert(memberships);
 
   // 4. Sample Work Items across various states
   const workItems = [
@@ -174,7 +172,6 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
       version: 2,
     },
   ];
-  await database('work_items').insert(workItems);
 
   // 5. Activity Events (Audit trail)
   const activityEvents = [
@@ -207,7 +204,6 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
       details: JSON.stringify({ from: 'IN_PROGRESS', to: 'AWAITING_APPROVAL', reason: 'Ready for Lead sign-off' }),
     },
   ];
-  await database('activity_events').insert(activityEvents);
 
   // 6. Comments
   const comments = [
@@ -224,7 +220,36 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
       content: 'All data deletion scripts prepared and verified against backup policies. Awaiting Lead sign-off.',
     },
   ];
-  await database('comments').insert(comments);
+
+  // Execute all deletions and insertions inside a single atomic Knex transaction
+  await database.transaction(async (trx) => {
+    // Clear existing data atomically in reverse order of foreign keys
+    await trx('comments').del();
+    await trx('activity_events').del();
+    await trx('outbox_deliveries').del();
+    await trx('outbox_jobs').del();
+    await trx('idempotency_keys').del();
+    await trx('work_items').del();
+    await trx('team_memberships').del();
+    await trx('teams').del();
+    await trx('users').del();
+    await trx('system_metadata').where({ key: 'seed_completed' }).del();
+
+    // Insert all entities atomically
+    await trx('teams').insert(teams);
+    await trx('users').insert(users);
+    await trx('team_memberships').insert(memberships);
+    await trx('work_items').insert(workItems);
+    await trx('activity_events').insert(activityEvents);
+    await trx('comments').insert(comments);
+
+    // 7. Atomic Seed Completed Marker
+    await trx('system_metadata').insert({
+      key: 'seed_completed',
+      value: 'true',
+      updated_at: new Date().toISOString(),
+    });
+  });
 
   console.log(`Successfully seeded:
   - ${teams.length} Teams

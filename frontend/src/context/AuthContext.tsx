@@ -12,6 +12,9 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const IS_DEMO_MODE = (import.meta as any).env?.VITE_DEMO_MODE !== 'false';
+const DEMO_PASSWORD = ((import.meta as any).env?.VITE_DEMO_PASSWORD as string) || 'password123';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -22,17 +25,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         let token = localStorage.getItem('newtonite_jwt_token');
 
-        // If no token exists, log in with default seeded lead credentials
-        if (!token) {
+        // In demo mode: If no token exists, log in with demo evaluator credentials
+        if (!token && IS_DEMO_MODE) {
           try {
-            const loginRes = await api.login('eng.lead@newtonite.internal', 'password123');
+            const loginRes = await api.login('eng.lead@newtonite.internal', DEMO_PASSWORD);
             if (loginRes?.token) {
               token = loginRes.token;
               localStorage.setItem('newtonite_jwt_token', token);
               localStorage.setItem('newtonite_active_user_id', loginRes.user.id);
             }
           } catch (lErr) {
-            console.warn('Initial login error:', lErr);
+            console.warn('Initial demo login error:', lErr);
           }
         }
 
@@ -59,7 +62,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const target = users.find((u) => u.id === userId);
     if (target?.email) {
       try {
-        const loginRes = await api.login(target.email, 'password123');
+        const loginRes = await api.login(target.email, DEMO_PASSWORD);
         if (loginRes?.token) {
           localStorage.setItem('newtonite_jwt_token', loginRes.token);
         }

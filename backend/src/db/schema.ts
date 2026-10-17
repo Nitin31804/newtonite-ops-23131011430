@@ -143,4 +143,13 @@ export async function initSchema(db: Knex): Promise<void> {
       table.index(['delivered_at']);
     });
   }
+
+  // 10. System Metadata table (Tracks system initialization, migrations, and atomic seed completion)
+  if (!(await db.schema.hasTable('system_metadata'))) {
+    await db.schema.createTable('system_metadata', (table) => {
+      table.string('key').primary();
+      table.text('value').notNullable();
+      table.timestamp('updated_at').defaultTo(db.fn.now());
+    });
+  }
 }

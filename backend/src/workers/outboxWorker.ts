@@ -184,38 +184,34 @@ export class OutboxWorker {
     }
 
     if (notification) {
-      dispatchedNotificationsLog.push(notification);
-
-      // Persist delivery audit record into database table
-      try {
-        await this.database('outbox_deliveries').insert({
-          id: notification.id,
-          job_id: jobId,
-          event_type: eventType,
-          channel: notification.channel,
-          recipient: notification.recipient,
-          payload: JSON.stringify(notification),
-          status: 'DELIVERED',
-          delivered_at: timestamp,
-        });
-      } catch (dbErr) {
-        console.warn('[OUTBOX] Could not record delivery in outbox_deliveries:', dbErr);
-      }
-
-      // External Webhook dispatch if configured via environment
+      // 1. External Webhook dispatch if configured via environment
+      // Must be verified BEFORE recording delivery; failures must bubble up for retry
       const webhookUrl = process.env.NOTIFICATION_WEBHOOK_URL || process.env.SLACK_WEBHOOK_URL;
       if (webhookUrl) {
-        try {
-          await fetch(webhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(notification),
-          });
-        } catch (webhookErr) {
-          console.warn(`[OUTBOX] Webhook dispatch to ${webhookUrl} failed:`, webhookErr);
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(notification),
+        });
+
+        if (!response.ok) {
+          throw new Error(`External webhook dispatch to ${webhookUrl} failed with HTTP ${response.status}: ${response.statusText}`);
         }
       }
 
+      // 2. Persist delivery audit record into database table only AFTER delivery succeeds
+      await this.database('outbox_deliveries').insert({
+        id: notification.id,
+        job_id: jobId,
+        event_type: eventType,
+        channel: notification.channel,
+        recipient: notification.recipient,
+        payload: JSON.stringify(notification),
+        status: 'DELIVERED',
+        delivered_at: timestamp,
+      });
+
+      dispatchedNotificationsLog.push(notification);
       console.log(`[OUTBOX NOTIFICATION DELIVERED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
     }
   }
