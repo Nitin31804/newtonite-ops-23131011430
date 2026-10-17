@@ -66,12 +66,12 @@ class ApiClient {
     return this.handleResponse<{ user: any }>(res);
   }
 
-  async getSetupStatus(): Promise<{ needsSetup: boolean }> {
+  async getSetupStatus(): Promise<{ needsSetup: boolean; requiresToken?: boolean; setupEnabled?: boolean }> {
     const res = await fetch('/api/auth/setup-status', { headers: this.getHeaders() });
-    return this.handleResponse<{ needsSetup: boolean }>(res);
+    return this.handleResponse<{ needsSetup: boolean; requiresToken?: boolean; setupEnabled?: boolean }>(res);
   }
 
-  async setupInitialAdmin(payload: { name: string; email: string; password: string }): Promise<{ token: string; user: any }> {
+  async setupInitialAdmin(payload: { name: string; email: string; password: string; setupToken?: string }): Promise<{ token: string; user: any }> {
     const res = await fetch('/api/auth/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

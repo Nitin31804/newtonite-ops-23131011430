@@ -9,11 +9,13 @@ interface AuthContextType {
   getUserRoleInTeam: (teamId: string) => Role | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  setupAdmin: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  setupAdmin: (name: string, email: string, password: string, setupToken?: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   isAuthenticated: boolean;
   isDemoMode: boolean;
   needsSetup: boolean;
+  requiresSetupToken: boolean;
+  setupEnabled: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -26,14 +28,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [requiresSetupToken, setRequiresSetupToken] = useState(false);
+  const [setupEnabled, setSetupEnabled] = useState(true);
 
   useEffect(() => {
     async function loadAuth() {
       try {
         // Check if database is fresh production with 0 users requiring initial setup
-        const status = await api.getSetupStatus().catch(() => ({ needsSetup: false }));
+        const status = await api.getSetupStatus().catch(() => ({
+          needsSetup: false,
+          requiresToken: false,
+          setupEnabled: true,
+        }));
         if (status?.needsSetup) {
           setNeedsSetup(true);
+          setRequiresSetupToken(!!status.requiresToken);
+          setSetupEnabled(status.setupEnabled !== false);
           setCurrentUser(null);
           setUsers([]);
           setIsLoading(false);
@@ -124,9 +134,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const setupAdmin = async (name: string, email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  const setupAdmin = async (name: string, email: string, password: string, setupToken?: string): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await api.setupInitialAdmin({ name, email, password });
+      const res = await api.setupInitialAdmin({ name, email, password, setupToken });
       if (res?.token && res?.user) {
         localStorage.setItem('newtonite_jwt_token', res.token);
         localStorage.setItem('newtonite_active_user_id', res.user.id);
@@ -193,6 +203,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAuthenticated: !!currentUser,
         isDemoMode: IS_DEMO_MODE,
         needsSetup,
+        requiresSetupToken,
+        setupEnabled,
       }}
     >
       {children}

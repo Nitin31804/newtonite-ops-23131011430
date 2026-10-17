@@ -67,6 +67,8 @@ export async function idempotencyMiddleware(
     }
 
     // Phase 1: Atomically claim the idempotency key with IN_FLIGHT status (status_code = 0)
+    // Distributed lease: locked_until expires 60 seconds from now unless refreshed by heartbeat
+    const initialLease = new Date(Date.now() + 60 * 1000).toISOString();
     try {
       await db('idempotency_keys').insert({
         key: idempotencyKey,
@@ -75,10 +77,9 @@ export async function idempotencyMiddleware(
         request_payload: requestPayload,
         status_code: 0, // 0 = IN_FLIGHT reservation
         response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+        locked_until: initialLease,
         created_at: new Date().toISOString(),
       });
-      // Register in-memory active key to distinguish actively executing slow queries from dead processes
-      activeInFlightKeys.add(idempotencyKey);
     } catch (insertError: any) {
       // Primary key constraint violation: Another concurrent request claimed this key first
       const raced = await db('idempotency_keys').where({ key: idempotencyKey }).first();
@@ -102,12 +103,25 @@ export async function idempotencyMiddleware(
       return;
     }
 
-    // Ensure active key cleanup if client disconnects or connection closes abruptly
-    const cleanupActiveKey = () => {
-      activeInFlightKeys.delete(idempotencyKey);
+    // Distributed Heartbeat: Extend locked_until every 15 seconds while request is executing
+    // Works across multiple Node.js processes, containers, and survives client socket disconnects
+    let heartbeatTimer: NodeJS.Timeout | null = setInterval(async () => {
+      try {
+        const nextLease = new Date(Date.now() + 60 * 1000).toISOString();
+        await db('idempotency_keys')
+          .where({ key: idempotencyKey, user_id: userId, status_code: 0 })
+          .update({ locked_until: nextLease });
+      } catch {
+        // Best effort lease extension
+      }
+    }, 15000);
+
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
     };
-    res.once('finish', cleanupActiveKey);
-    res.once('close', cleanupActiveKey);
 
     // Phase 2: Intercept response and await database update BEFORE flushing to client
     const originalJson = res.json.bind(res);
@@ -127,6 +141,7 @@ export async function idempotencyMiddleware(
                   .update({
                     status_code: res.statusCode,
                     response_body: JSON.stringify(body),
+                    locked_until: null, // Release lease upon completion
                   });
                 saved = true;
                 break;
@@ -144,6 +159,7 @@ export async function idempotencyMiddleware(
                 .update({
                   status_code: res.statusCode,
                   response_body: JSON.stringify({ message: 'Request completed successfully (cached payload unavailable)' }),
+                  locked_until: null,
                 })
                 .catch(() => {});
             }
@@ -158,7 +174,7 @@ export async function idempotencyMiddleware(
         } catch (err) {
           console.error('Idempotency completion interceptor error:', err);
         } finally {
-          activeInFlightKeys.delete(idempotencyKey);
+          stopHeartbeat();
           originalJson(body);
         }
       })();

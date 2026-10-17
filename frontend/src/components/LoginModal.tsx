@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogIn, Lock, Mail, ShieldAlert, Sparkles, User, UserPlus, ShieldCheck, X } from 'lucide-react';
+import { LogIn, Lock, Mail, ShieldAlert, Sparkles, User, UserPlus, ShieldCheck, KeyRound, X } from 'lucide-react';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -13,11 +13,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onClose,
   canDismiss = true,
 }) => {
-  const { login, setupAdmin, isDemoMode, needsSetup } = useAuth();
+  const { login, setupAdmin, isDemoMode, needsSetup, requiresSetupToken, setupEnabled } = useAuth();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [setupToken, setSetupToken] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,6 +51,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
+    if (requiresSetupToken && !setupToken.trim()) {
+      setError('Operator setup security token is required.');
+      return;
+    }
+
     if (password.length < 8) {
       setError('Master password must be at least 8 characters in length.');
       return;
@@ -63,7 +69,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     setIsLoading(true);
     setError(null);
 
-    const res = await setupAdmin(name.trim(), email.trim(), password);
+    const res = await setupAdmin(name.trim(), email.trim(), password, setupToken.trim() || undefined);
     setIsLoading(false);
 
     if (res.success) {
@@ -133,8 +139,37 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         )}
 
         {/* Form Body */}
-        {needsSetup ? (
+        {needsSetup && !setupEnabled ? (
+          <div className="mt-5 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs space-y-2">
+            <div className="font-bold flex items-center space-x-1.5 text-amber-300">
+              <ShieldAlert className="w-4 h-4 text-amber-400" />
+              <span>Interactive Public Setup Disabled</span>
+            </div>
+            <p>
+              In production mode without an operator <code className="px-1 py-0.5 rounded bg-black/40 text-amber-300">SETUP_TOKEN</code>, interactive browser setup is prohibited to prevent unauthorized account takeover.
+            </p>
+            <p className="text-slate-400 text-[11px]">
+              To bootstrap root access, configure <code className="px-1 py-0.5 rounded bg-black/40 text-slate-300">INITIAL_ADMIN_EMAIL</code> and <code className="px-1 py-0.5 rounded bg-black/40 text-slate-300">INITIAL_ADMIN_PASSWORD</code> in your environment, or configure <code className="px-1 py-0.5 rounded bg-black/40 text-slate-300">SETUP_TOKEN</code>.
+            </p>
+          </div>
+        ) : needsSetup ? (
           <form onSubmit={handleSetupSubmit} className="mt-5 space-y-3.5">
+            {requiresSetupToken && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Operator Setup Token (SETUP_TOKEN)</span>
+                </label>
+                <input
+                  type="password"
+                  value={setupToken}
+                  onChange={(e) => setSetupToken(e.target.value)}
+                  placeholder="Enter operator setup secret..."
+                  required
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-950/80 border border-amber-500/40 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-amber-400 transition"
+                />
+              </div>
+            )}
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
                 <User className="w-3.5 h-3.5 text-emerald-400" />

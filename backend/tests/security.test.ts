@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app.js';
 import { db } from '../src/config/database.js';
@@ -550,26 +550,26 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     expect(activeInDb.status_code).toBe(0);
   });
 
-  it('Defense 25: A slow in-flight request (>5 min) actively executing in memory is NEVER deleted by the worker', async () => {
+  it('Defense 25: Multi-process distributed lease protects active slow requests while reclaiming expired crashed requests', async () => {
     const { outboxWorker } = await import('../src/workers/outboxWorker.js');
-    const { activeInFlightKeys } = await import('../src/middleware/idempotency.js');
 
-    const slowActiveKey = 'slow-active-key-' + Date.now();
-    const crashedKey = 'crashed-key-' + Date.now();
+    const slowActiveKey = 'slow-lease-key-' + Date.now();
+    const crashedKey = 'crashed-lease-key-' + Date.now();
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const leaseInFuture = new Date(Date.now() + 60 * 1000).toISOString(); // Active heartbeat lease
+    const leaseExpired = new Date(Date.now() - 30 * 1000).toISOString(); // Expired lease from crashed process
 
-    // Register slowActiveKey as actively executing in this Node process
-    activeInFlightKeys.add(slowActiveKey);
-
-    // Insert both keys with created_at 10 minutes ago
+    // Insert slowActiveKey (created 10 minutes ago, but lease refreshed by heartbeat into the future)
+    // Insert crashedKey (created 10 minutes ago, but lease expired because server died)
     await db('idempotency_keys').insert([
       {
         key: slowActiveKey,
         user_id: 'usr-eng-lead',
         endpoint: 'POST /api/items',
-        request_payload: JSON.stringify({ title: 'Slow query' }),
+        request_payload: JSON.stringify({ title: 'Slow distributed query' }),
         status_code: 0,
         response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+        locked_until: leaseInFuture,
         created_at: tenMinutesAgo,
       },
       {
@@ -579,54 +579,68 @@ describe('Security Hardening & Edge-Case Defenses', () => {
         request_payload: JSON.stringify({ title: 'Dead process query' }),
         status_code: 0,
         response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+        locked_until: leaseExpired,
         created_at: tenMinutesAgo,
       },
     ]);
 
+    await outboxWorker.processBatch();
+
+    // Expired lease key must be cleaned up
+    const crashedInDb = await db('idempotency_keys').where({ key: crashedKey }).first();
+    expect(crashedInDb).toBeUndefined();
+
+    // Active lease key (even though created 10m ago) must NOT be deleted
+    const slowInDb = await db('idempotency_keys').where({ key: slowActiveKey }).first();
+    expect(slowInDb).toBeTruthy();
+    expect(slowInDb.status_code).toBe(0);
+  });
+
+  it('Defense 26: Pre-dispatch delivery check prevents duplicate external webhook HTTP calls on retry', async () => {
+    const { outboxWorker } = await import('../src/workers/outboxWorker.js');
+
+    const testJobId = 'job-webhook-dedup-' + Date.now();
+    const notifId = `notif-${testJobId}`;
+    process.env.NOTIFICATION_WEBHOOK_URL = 'https://webhook.mock.internal/events';
+
+    // Mock global fetch to track exact call count
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, statusText: 'OK' });
+    });
+
     try {
+      await db('outbox_jobs').insert({
+        id: testJobId,
+        event_type: 'WORK_ITEM_CREATED',
+        payload: JSON.stringify({ itemId: 'wi-test', teamId: 'eng', priority: 'URGENT' }),
+        status: 'PENDING',
+        attempts: 0,
+        max_attempts: 3,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      // 1. First execution: webhook is dispatched
       await outboxWorker.processBatch();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-      // Crashed key (not in activeInFlightKeys) must be deleted
-      const crashedInDb = await db('idempotency_keys').where({ key: crashedKey }).first();
-      expect(crashedInDb).toBeUndefined();
+      // Verify delivery record exists
+      const deliveryRow = await db('outbox_deliveries').where({ id: notifId, status: 'DELIVERED' }).first();
+      expect(deliveryRow).toBeTruthy();
 
-      // Slow active key (in activeInFlightKeys) must NOT be deleted despite being >5 minutes old
-      const slowInDb = await db('idempotency_keys').where({ key: slowActiveKey }).first();
-      expect(slowInDb).toBeTruthy();
-      expect(slowInDb.status_code).toBe(0);
+      // 2. Simulate worker crash before job completion: job reset to PENDING while delivery record remains
+      await db('outbox_jobs').where({ id: testJobId }).update({ status: 'PENDING' });
+
+      // 3. Retry batch execution: pre-dispatch check MUST detect prior DELIVERED record and skip external fetch
+      await outboxWorker.processBatch();
+      expect(fetchSpy).toHaveBeenCalledTimes(1); // STILL exactly 1 call! No duplicate dispatch!
     } finally {
-      activeInFlightKeys.delete(slowActiveKey);
+      fetchSpy.mockRestore();
+      delete process.env.NOTIFICATION_WEBHOOK_URL;
     }
   });
 
-  it('Defense 26: Outbox worker produces deterministic notification IDs across retries to prevent duplicate deliveries', async () => {
-    const { outboxWorker, dispatchedNotificationsLog } = await import('../src/workers/outboxWorker.js');
-
-    const testJobId = 'job-retry-dedup-' + Date.now();
-    await db('outbox_jobs').insert({
-      id: testJobId,
-      event_type: 'WORK_ITEM_CREATED',
-      payload: JSON.stringify({ itemId: 'wi-test', teamId: 'eng', priority: 'URGENT' }),
-      status: 'PENDING',
-      attempts: 0,
-      max_attempts: 3,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-
-    await outboxWorker.processBatch();
-
-    const deliveredNotif = dispatchedNotificationsLog.find((n) => n.id === `notif-${testJobId}`);
-    expect(deliveredNotif).toBeTruthy();
-    expect(deliveredNotif?.id).toBe(`notif-${testJobId}`);
-
-    // Verify database record has the deterministic ID
-    const deliveryRow = await db('outbox_deliveries').where({ id: `notif-${testJobId}` }).first();
-    expect(deliveryRow).toBeTruthy();
-    expect(deliveryRow.job_id).toBe(testJobId);
-  });
-
-  it('Defense 27: Initial administrator setup succeeds on fresh 0-user database and is permanently locked (403) thereafter', async () => {
+  it('Defense 27: Initial administrator setup enforces operator SETUP_TOKEN and atomic concurrency locking', async () => {
     // Clear users and related tables to simulate fresh production database
     await db('team_memberships').del();
     await db('activity_events').del();
@@ -634,48 +648,68 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     await db('work_items').del();
     await db('users').del();
 
-    // Verify /api/auth/setup-status reports needsSetup: true
-    const statusRes = await request(app).get('/api/auth/setup-status');
-    expect(statusRes.status).toBe(200);
-    expect(statusRes.body.needsSetup).toBe(true);
+    const testSecret = 'secret-token-ops-991';
+    process.env.SETUP_TOKEN = testSecret;
 
-    // Provision the initial administrator
-    const setupRes = await request(app)
-      .post('/api/auth/setup')
-      .send({
-        name: 'Chief Architect',
-        email: 'architect@enterprise.org',
-        password: 'SuperSecurePassword2026!',
-      });
+    try {
+      // 1. Verify /api/auth/setup-status reports needsSetup: true and requiresToken: true
+      const statusRes = await request(app).get('/api/auth/setup-status');
+      expect(statusRes.status).toBe(200);
+      expect(statusRes.body.needsSetup).toBe(true);
+      expect(statusRes.body.requiresToken).toBe(true);
 
-    expect(setupRes.status).toBe(201);
-    expect(setupRes.body.token).toBeTruthy();
-    expect(setupRes.body.user.email).toBe('architect@enterprise.org');
+      // 2. Attempt setup with missing or incorrect token -> Rejected 401 Unauthorized
+      const unauthRes = await request(app)
+        .post('/api/auth/setup')
+        .send({
+          name: 'Attacker',
+          email: 'attacker@evil.org',
+          password: 'MaliciousPassword123!',
+        });
+      expect(unauthRes.status).toBe(401);
+      expect(unauthRes.body.error).toContain('Unauthorized');
 
-    // Verify /api/auth/setup-status now reports needsSetup: false
-    const statusAfterRes = await request(app).get('/api/auth/setup-status');
-    expect(statusAfterRes.body.needsSetup).toBe(false);
+      // 3. Concurrent simultaneous setup requests with valid token: Atomic transaction ensures exactly one winner
+      const [res1, res2] = await Promise.all([
+        request(app)
+          .post('/api/auth/setup')
+          .set('X-Setup-Token', testSecret)
+          .send({
+            name: 'Architect One',
+            email: 'admin1@enterprise.org',
+            password: 'SuperSecurePassword2026!',
+          }),
+        request(app)
+          .post('/api/auth/setup')
+          .set('X-Setup-Token', testSecret)
+          .send({
+            name: 'Architect Two',
+            email: 'admin2@enterprise.org',
+            password: 'SuperSecurePassword2026!',
+          }),
+      ]);
 
-    // Second attempt to /api/auth/setup must be permanently locked with 403 Forbidden
-    const duplicateSetupRes = await request(app)
-      .post('/api/auth/setup')
-      .send({
-        name: 'Intruder',
-        email: 'intruder@evil.org',
-        password: 'AnotherPassword123!',
-      });
+      const statuses = [res1.status, res2.status].sort();
+      // Exactly one succeeds with 201, the concurrent loser gets 403 Forbidden!
+      expect(statuses).toEqual([201, 403]);
 
-    expect(duplicateSetupRes.status).toBe(403);
-    expect(duplicateSetupRes.body.error).toContain('permanently locked');
+      // Exactly 1 user exists in database
+      const userCount = Number((await db('users').count('* as count').first())?.count || 0);
+      expect(userCount).toBe(1);
 
-    // Admin should be able to log in with the created credentials
-    const loginRes = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: 'architect@enterprise.org',
-        password: 'SuperSecurePassword2026!',
-      });
-    expect(loginRes.status).toBe(200);
-    expect(loginRes.body.token).toBeTruthy();
+      // 4. Any subsequent setup attempt is permanently locked with 403
+      const subsequentRes = await request(app)
+        .post('/api/auth/setup')
+        .set('X-Setup-Token', testSecret)
+        .send({
+          name: 'Latecomer',
+          email: 'late@enterprise.org',
+          password: 'SuperSecurePassword2026!',
+        });
+      expect(subsequentRes.status).toBe(403);
+      expect(subsequentRes.body.error).toContain('permanently locked');
+    } finally {
+      delete process.env.SETUP_TOKEN;
+    }
   });
 });

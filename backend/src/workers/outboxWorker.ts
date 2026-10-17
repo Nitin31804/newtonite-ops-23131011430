@@ -1,6 +1,5 @@
 import { Knex } from 'knex';
 import { db } from '../config/database.js';
-import { activeInFlightKeys } from '../middleware/idempotency.js';
 
 export interface DispatchedNotification {
   id: string;
@@ -47,24 +46,19 @@ export class OutboxWorker {
         updated_at: nowIso,
       });
 
-    // 2. Crash recovery: Reclaim zombie in-flight idempotency keys abandoned by crashed server processes (>5 minutes)
-    // CRITICAL: We only reclaim in-flight keys that are NOT currently being actively processed by this Node.js instance (e.g. slow DB queries or network calls).
-    const zombieIdemThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    const candidateZombieKeys = await this.database('idempotency_keys')
+    // 2. Crash recovery: Reclaim zombie in-flight idempotency keys abandoned by crashed server processes
+    // A key is an abandoned zombie ONLY if status_code === 0 AND its distributed heartbeat lease (locked_until) has expired.
+    // Active requests continuously refresh locked_until in the DB, protecting them across multiple processes and client drops.
+    await this.database('idempotency_keys')
       .where('status_code', 0)
-      .where('created_at', '<=', zombieIdemThreshold)
-      .select('key');
-
-    const keysToPurge = candidateZombieKeys
-      .map((r: any) => r.key)
-      .filter((k: string) => !activeInFlightKeys.has(k));
-
-    if (keysToPurge.length > 0) {
-      await this.database('idempotency_keys')
-        .whereIn('key', keysToPurge)
-        .del()
-        .catch(() => {});
-    }
+      .where(function () {
+        this.where('locked_until', '<=', nowIso)
+          .orWhere(function () {
+            this.whereNull('locked_until').andWhere('created_at', '<=', new Date(Date.now() - 5 * 60 * 1000).toISOString());
+          });
+      })
+      .del()
+      .catch(() => {});
 
     // 3. Find pending jobs scheduled for execution
     const jobs = await this.database('outbox_jobs')
@@ -206,7 +200,18 @@ export class OutboxWorker {
     }
 
     if (notification) {
-      // 1. External Webhook dispatch if configured via environment
+      // 1. Pre-dispatch idempotency check: Check if this outbox job notification was ALREADY delivered
+      // Prevents duplicate webhook dispatch if worker crashed after dispatch but before updating outbox_jobs to COMPLETED
+      const existingDelivery = await this.database('outbox_deliveries')
+        .where({ id: notification.id, status: 'DELIVERED' })
+        .first();
+
+      if (existingDelivery) {
+        console.log(`[OUTBOX] Webhook ${notification.id} for job ${jobId} already confirmed DELIVERED. Skipping duplicate external HTTP call.`);
+        return;
+      }
+
+      // 2. External Webhook dispatch if configured via environment
       // Must be verified BEFORE recording delivery; failures must bubble up for retry
       const webhookUrl = process.env.NOTIFICATION_WEBHOOK_URL || process.env.SLACK_WEBHOOK_URL;
       if (webhookUrl) {
@@ -222,10 +227,10 @@ export class OutboxWorker {
         }
       }
 
-      // 2. Persist delivery audit record into database table only AFTER delivery succeeds
+      // 3. Persist delivery audit record into database table only AFTER delivery succeeds
       // Guard against duplicate primary key in case of retry
-      const existingDelivery = await this.database('outbox_deliveries').where({ id: notification.id }).first();
-      if (!existingDelivery) {
+      const alreadyLogged = await this.database('outbox_deliveries').where({ id: notification.id }).first();
+      if (!alreadyLogged) {
         await this.database('outbox_deliveries').insert({
           id: notification.id,
           job_id: jobId,

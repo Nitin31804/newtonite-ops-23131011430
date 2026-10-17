@@ -97,14 +97,21 @@ export async function initSchema(db: Knex): Promise<void> {
       table.text('request_payload').nullable();
       table.integer('status_code').notNullable();
       table.text('response_body').notNullable(); // JSON string
+      table.timestamp('locked_until').nullable(); // Distributed heartbeat lease expiration
       table.timestamp('created_at').defaultTo(db.fn.now());
 
       table.index(['created_at']);
+      table.index(['status_code', 'locked_until']);
     });
   } else {
     if (!(await db.schema.hasColumn('idempotency_keys', 'request_payload'))) {
       await db.schema.alterTable('idempotency_keys', (table) => {
         table.text('request_payload').nullable();
+      });
+    }
+    if (!(await db.schema.hasColumn('idempotency_keys', 'locked_until'))) {
+      await db.schema.alterTable('idempotency_keys', (table) => {
+        table.timestamp('locked_until').nullable();
       });
     }
   }
