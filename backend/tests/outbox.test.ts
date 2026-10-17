@@ -7,7 +7,7 @@ import { OutboxWorker } from '../src/workers/outboxWorker.js';
 
 describe('Critical Behavior: Reliable Asynchronous Processing (Transactional Outbox)', () => {
   beforeEach(async () => {
-    await runSeed(db);
+    await runSeed(db, { force: true });
   });
 
   it('Scenario 6a: State transition creates outbox notification job atomically in same transaction', async () => {

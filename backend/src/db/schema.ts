@@ -126,4 +126,21 @@ export async function initSchema(db: Knex): Promise<void> {
       table.index(['status', 'next_run_at']);
     });
   }
+
+  // 9. Outbox Deliveries table (Persistent operational log of dispatched notifications)
+  if (!(await db.schema.hasTable('outbox_deliveries'))) {
+    await db.schema.createTable('outbox_deliveries', (table) => {
+      table.string('id').primary();
+      table.string('job_id').notNullable();
+      table.string('event_type').notNullable();
+      table.string('channel').notNullable();
+      table.string('recipient').notNullable();
+      table.text('payload').notNullable();
+      table.string('status').notNullable().defaultTo('DELIVERED');
+      table.timestamp('delivered_at').defaultTo(db.fn.now());
+
+      table.index(['job_id', 'event_type']);
+      table.index(['delivered_at']);
+    });
+  }
 }

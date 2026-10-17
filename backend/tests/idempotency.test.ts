@@ -6,7 +6,7 @@ import { runSeed } from '../src/db/seed.js';
 
 describe('Critical Behavior: Request Idempotency & Retry Safety', () => {
   beforeEach(async () => {
-    await runSeed(db);
+    await runSeed(db, { force: true });
   });
 
   it('Scenario 3: Repeated POST request with identical Idempotency-Key returns cached response without duplicate DB insert', async () => {

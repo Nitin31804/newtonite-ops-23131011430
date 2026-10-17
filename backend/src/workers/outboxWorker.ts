@@ -72,7 +72,7 @@ export class OutboxWorker {
 
       try {
         const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
-        await this.handleJobEvent(job.event_type, payload);
+        await this.handleJobEvent(job.id, job.event_type, payload);
 
         // Mark COMPLETED
         await this.database('outbox_jobs')
@@ -106,14 +106,16 @@ export class OutboxWorker {
   }
 
   /**
-   * Idempotent business handlers for outbox events
+   * Idempotent business handlers for outbox events.
+   * Dispatches to persistent database audit log and optional external webhooks.
    */
-  private async handleJobEvent(eventType: string, payload: any): Promise<void> {
+  private async handleJobEvent(jobId: string, eventType: string, payload: any): Promise<void> {
     const timestamp = new Date().toISOString();
+    let notification: DispatchedNotification | null = null;
 
     switch (eventType) {
       case 'WORK_ITEM_CREATED': {
-        const notification: DispatchedNotification = {
+        notification = {
           id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           channel: 'SLACK_WEBHOOK',
           recipient: `#team-${payload.teamId || 'ops'}`,
@@ -121,13 +123,11 @@ export class OutboxWorker {
           body: `Work item '${payload.itemId}' created for team ${payload.teamId}.`,
           timestamp,
         };
-        dispatchedNotificationsLog.push(notification);
-        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
       }
 
       case 'WORK_ITEM_ASSIGNED': {
-        const notification: DispatchedNotification = {
+        notification = {
           id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           channel: 'EMAIL',
           recipient: payload.assigneeId || 'assigned-engineer',
@@ -135,13 +135,11 @@ export class OutboxWorker {
           body: `You have been assigned to work item ${payload.itemId}.`,
           timestamp,
         };
-        dispatchedNotificationsLog.push(notification);
-        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
       }
 
       case 'APPROVAL_REQUIRED': {
-        const notification: DispatchedNotification = {
+        notification = {
           id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           channel: 'SLACK_WEBHOOK',
           recipient: '#team-leads',
@@ -149,13 +147,11 @@ export class OutboxWorker {
           body: `Item ${payload.itemId} transitioned to AWAITING_APPROVAL. Rationale: ${payload.reason || 'None provided'}`,
           timestamp,
         };
-        dispatchedNotificationsLog.push(notification);
-        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
       }
 
       case 'ITEM_RESOLVED': {
-        const notification: DispatchedNotification = {
+        notification = {
           id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           channel: 'SLACK_WEBHOOK',
           recipient: '#ops-resolved',
@@ -163,13 +159,11 @@ export class OutboxWorker {
           body: `Item ${payload.itemId} was resolved. Rationale: ${payload.reason || 'Completed'}`,
           timestamp,
         };
-        dispatchedNotificationsLog.push(notification);
-        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
       }
 
       case 'STATUS_CHANGED': {
-        const notification: DispatchedNotification = {
+        notification = {
           id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           channel: 'PUSH',
           recipient: payload.itemId,
@@ -177,8 +171,6 @@ export class OutboxWorker {
           body: `Item ${payload.itemId} updated to status ${payload.to}. Reason: ${payload.reason || 'N/A'}`,
           timestamp,
         };
-        dispatchedNotificationsLog.push(notification);
-        console.log(`[OUTBOX NOTIFICATION DISPATCHED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
         break;
       }
 
@@ -189,6 +181,42 @@ export class OutboxWorker {
       default:
         console.log(`[OUTBOX] Unhandled event type: ${eventType}`);
         break;
+    }
+
+    if (notification) {
+      dispatchedNotificationsLog.push(notification);
+
+      // Persist delivery audit record into database table
+      try {
+        await this.database('outbox_deliveries').insert({
+          id: notification.id,
+          job_id: jobId,
+          event_type: eventType,
+          channel: notification.channel,
+          recipient: notification.recipient,
+          payload: JSON.stringify(notification),
+          status: 'DELIVERED',
+          delivered_at: timestamp,
+        });
+      } catch (dbErr) {
+        console.warn('[OUTBOX] Could not record delivery in outbox_deliveries:', dbErr);
+      }
+
+      // External Webhook dispatch if configured via environment
+      const webhookUrl = process.env.NOTIFICATION_WEBHOOK_URL || process.env.SLACK_WEBHOOK_URL;
+      if (webhookUrl) {
+        try {
+          await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(notification),
+          });
+        } catch (webhookErr) {
+          console.warn(`[OUTBOX] Webhook dispatch to ${webhookUrl} failed:`, webhookErr);
+        }
+      }
+
+      console.log(`[OUTBOX NOTIFICATION DELIVERED] ${notification.channel} -> ${notification.recipient}: ${notification.title}`);
     }
   }
 

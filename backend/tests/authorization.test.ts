@@ -6,7 +6,7 @@ import { runSeed } from '../src/db/seed.js';
 
 describe('Critical Behavior: Resource-Level Team & Role Authorization', () => {
   beforeEach(async () => {
-    await runSeed(db);
+    await runSeed(db, { force: true });
   });
 
   it('Scenario 5a: Cross-team unauthorized user receives 403 Forbidden on access', async () => {

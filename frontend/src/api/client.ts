@@ -55,15 +55,15 @@ class ApiClient {
   }
 
   async getPersonas(): Promise<any[]> {
-    const res = await fetch('/api/auth/personas');
+    const res = await fetch('/api/auth/personas', { headers: this.getHeaders() });
     return this.handleResponse<any[]>(res);
   }
 
-  async getPersonaToken(userId: string): Promise<{ token: string; user: any }> {
-    const res = await fetch('/api/auth/token', {
+  async login(email: string, password = 'password123'): Promise<{ token: string; user: any }> {
+    const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId }),
+      body: JSON.stringify({ email, password }),
     });
     return this.handleResponse<{ token: string; user: any }>(res);
   }

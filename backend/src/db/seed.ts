@@ -4,9 +4,18 @@ import { v4 as uuidv4 } from 'uuid';
 import { db, getDatabase } from '../config/database.js';
 import { initSchema } from './schema.js';
 
-export async function runSeed(database: Knex = db) {
+export async function runSeed(database: Knex = db, options: { force?: boolean } = {}) {
   console.log('--- Initializing Database Schema ---');
   await initSchema(database);
+
+  // Check if database is already populated
+  const existingUsers = await database('users').count('* as count').first();
+  const userCount = Number(existingUsers?.count || 0);
+
+  if (userCount > 0 && !options.force && process.env.FORCE_RESEED !== 'true') {
+    console.log(`Database already contains ${userCount} users. Skipping seed to preserve operational data.`);
+    return;
+  }
 
   console.log('--- Seeding Database ---');
 
@@ -227,7 +236,8 @@ export async function runSeed(database: Knex = db) {
 
 // Run directly if called from CLI
 if (process.argv[1]?.endsWith('seed.ts') || process.argv[1]?.endsWith('seed.js')) {
-  runSeed()
+  const force = process.argv.includes('--force');
+  runSeed(db, { force })
     .then(() => {
       console.log('Seed completed successfully.');
       process.exit(0);

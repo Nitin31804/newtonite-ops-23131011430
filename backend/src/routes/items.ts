@@ -100,6 +100,10 @@ router.post('/', idempotencyMiddleware, async (req: AuthenticatedRequest, res: R
     const created = await itemService.createItem(req.user!.id, parsed.data);
     res.status(201).json(created);
   } catch (error: any) {
+    if (error instanceof BadRequestError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     console.error('Create item error:', error);
     res.status(500).json({ error: error.message || 'Failed to create work item' });
   }

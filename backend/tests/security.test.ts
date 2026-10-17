@@ -6,7 +6,7 @@ import { runSeed } from '../src/db/seed.js';
 
 describe('Security Hardening & Edge-Case Defenses', () => {
   beforeEach(async () => {
-    await runSeed(db);
+    await runSeed(db, { force: true });
   });
 
   it('Defense 1: Schema validation blocks invalid enum priorities and malformed payloads on PATCH', async () => {
@@ -222,5 +222,115 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     for (const item of res.body.items) {
       expect(item.team_id).toBe('team-cmp');
     }
+  });
+
+  it('Defense 14: Concurrent status transitions against the same item reject the loser with 409 Conflict', async () => {
+    // wi-102 is IN_PROGRESS in team-pay
+    const itemId = 'wi-102';
+    const actorId = 'usr-pay-lead';
+
+    const [res1, res2] = await Promise.all([
+      request(app)
+        .post(`/api/items/${itemId}/transition`)
+        .set('x-user-id', actorId)
+        .send({
+          targetStatus: 'AWAITING_APPROVAL',
+          reason: 'Review ready for team sign-off (Worker A)',
+        }),
+      request(app)
+        .post(`/api/items/${itemId}/transition`)
+        .set('x-user-id', actorId)
+        .send({
+          targetStatus: 'AWAITING_APPROVAL',
+          reason: 'Review ready for team sign-off (Worker B)',
+        }),
+    ]);
+
+    const statuses = [res1.status, res2.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    const conflictRes = res1.status === 409 ? res1 : res2;
+    expect(conflictRes.body.error).toContain('Concurrent Transition Conflict');
+  });
+
+  it('Defense 15: Creating an item with an assignee outside its team returns 400 Bad Request', async () => {
+    const res = await request(app)
+      .post('/api/items')
+      .set('x-user-id', 'usr-eng-lead')
+      .send({
+        title: 'Cross-team assignment attempt',
+        description: 'Trying to assign an engineering ticket to a compliance lawyer',
+        type: 'incident',
+        priority: 'HIGH',
+        team_id: 'team-eng',
+        assignee_id: 'usr-cmp-1', // Legal/Compliance member, not in team-eng
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('is not a member of team');
+  });
+
+  it('Defense 16: Outbox worker persists delivered notifications into outbox_deliveries database table', async () => {
+    const { OutboxWorker } = await import('../src/workers/outboxWorker.js');
+    const worker = new OutboxWorker(db);
+
+    const testJobId = `job-test-${Date.now()}`;
+    await db('outbox_jobs').insert({
+      id: testJobId,
+      event_type: 'WORK_ITEM_CREATED',
+      payload: JSON.stringify({ itemId: 'wi-test-999', teamId: 'team-eng', priority: 'HIGH' }),
+      status: 'PENDING',
+      attempts: 0,
+      max_attempts: 5,
+      next_run_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const result = await worker.processBatch(10);
+    expect(result.processed).toBeGreaterThan(0);
+    expect(result.succeeded).toBeGreaterThan(0);
+
+    // Verify delivery audit record exists in outbox_deliveries table
+    const delivery = await db('outbox_deliveries').where({ job_id: testJobId }).first();
+    expect(delivery).toBeTruthy();
+    expect(delivery.status).toBe('DELIVERED');
+    expect(delivery.channel).toBe('SLACK_WEBHOOK');
+  });
+
+  it('Defense 17: Seeding is idempotent and skips clearing database if operational data exists', async () => {
+    const customTicketId = 'wi-custom-operational-record';
+    await db('work_items').insert({
+      id: customTicketId,
+      title: 'Active customer incident created during operations',
+      description: 'Must NOT be wiped when server restarts',
+      type: 'incident',
+      priority: 'URGENT',
+      status: 'OPEN',
+      team_id: 'team-eng',
+      created_by_id: 'usr-eng-lead',
+      version: 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    // Run seed without force (simulate server reboot)
+    await runSeed(db, { force: false });
+
+    // Verify operational record was PRESERVED
+    const preservedItem = await db('work_items').where({ id: customTicketId }).first();
+    expect(preservedItem).toBeTruthy();
+    expect(preservedItem.title).toBe('Active customer incident created during operations');
+  });
+
+  it('Defense 18: Unauthenticated access to /api/auth/token is rejected with 404 (endpoint removed) and /api/auth/personas requires authentication', async () => {
+    // 1. Open token endpoint must be completely gone (404)
+    const tokenRes = await request(app)
+      .post('/api/auth/token')
+      .send({ userId: 'usr-admin' });
+    expect(tokenRes.status).toBe(404);
+
+    // 2. Personas endpoint without authentication returns 401 Unauthorized
+    const personaRes = await request(app).get('/api/auth/personas');
+    expect(personaRes.status).toBe(401);
   });
 });

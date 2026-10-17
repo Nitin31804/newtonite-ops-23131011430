@@ -7,7 +7,7 @@ import { runSeed } from '../src/db/seed.js';
 describe('Critical Behavior: Concurrency & Race Conditions', () => {
   beforeEach(async () => {
     // Re-seed to ensure clean baseline for every test
-    await runSeed(db);
+    await runSeed(db, { force: true });
   });
 
   it('Scenario 1: Two users concurrently claiming the same item - exactly one succeeds (409 Conflict)', async () => {

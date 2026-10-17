@@ -333,6 +333,14 @@ export class ItemService {
         );
       }
 
+      // If the item is already at the target status, it's a concurrent transition conflict
+      if (currentItem.status === targetStatus) {
+        throw new ConflictError(
+          `Concurrent Transition Conflict: Work item is already in '${targetStatus}' status (current version: ${currentItem.version}).`,
+          currentItem
+        );
+      }
+
       // Check state machine & RBAC
       const validation = validateTransition(currentItem.status, targetStatus, actorRole, reason);
       if (!validation.valid) {
@@ -342,14 +350,28 @@ export class ItemService {
         throw new BadRequestError(validation.error || 'Invalid transition.');
       }
 
-      // Update work item status
-      await trx('work_items')
-        .where({ id: itemId })
+      // Atomic conditional update: Enforce that the item has not changed status or version
+      const condition: any = {
+        id: itemId,
+        status: currentItem.status,
+        version: currentItem.version,
+      };
+
+      const rowsUpdated = await trx('work_items')
+        .where(condition)
         .update({
           status: targetStatus,
           version: db.raw('version + 1'),
           updated_at: new Date(),
         });
+
+      if (rowsUpdated === 0) {
+        const latest = await trx('work_items').where({ id: itemId }).first();
+        throw new ConflictError(
+          `Concurrent Transition Conflict: The work item state changed from '${currentItem.status}' (v${currentItem.version}) to '${latest?.status}' (v${latest?.version}) while processing your transition.`,
+          latest
+        );
+      }
 
       // Record Activity Log
       await trx('activity_events').insert({

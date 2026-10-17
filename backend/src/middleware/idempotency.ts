@@ -40,23 +40,34 @@ export async function idempotencyMiddleware(
         return;
       }
 
-      // If currently processing in another thread
+      // If currently marked in-flight (status_code === 0)
       if (existing.status_code === 0) {
-        res.status(409).json({
-          error: 'Concurrent Request Conflict: An identical request with this Idempotency-Key is currently in-flight.',
-        });
-        return;
+        // Reclaim stranded/zombie in-flight keys older than 30 seconds
+        const createdAt = new Date(existing.created_at).getTime();
+        const isStale = Date.now() - createdAt > 30 * 1000;
+        if (isStale) {
+          await db('idempotency_keys')
+            .where({ key: idempotencyKey, user_id: userId })
+            .del();
+        } else {
+          res.status(409).json({
+            error: 'Concurrent Request Conflict: An identical request with this Idempotency-Key is currently in-flight.',
+          });
+          return;
+        }
       }
 
-      res.setHeader('X-Idempotency-Hit', 'true');
-      res.status(existing.status_code);
-      try {
-        const parsed = JSON.parse(existing.response_body);
-        res.json(parsed);
-      } catch {
-        res.send(existing.response_body);
+      if (existing.status_code > 0) {
+        res.setHeader('X-Idempotency-Hit', 'true');
+        res.status(existing.status_code);
+        try {
+          const parsed = JSON.parse(existing.response_body);
+          res.json(parsed);
+        } catch {
+          res.send(existing.response_body);
+        }
+        return;
       }
-      return;
     }
 
     // Phase 1: Atomically claim the idempotency key with IN_FLIGHT status (status_code = 0)
@@ -115,6 +126,11 @@ export async function idempotencyMiddleware(
           }
         } catch (err) {
           console.error('Failed to update idempotency record:', err);
+          // If updating the completed record fails, delete the in-flight key so it is NOT stranded
+          await db('idempotency_keys')
+            .where({ key: idempotencyKey, user_id: userId })
+            .del()
+            .catch(() => {});
         } finally {
           originalJson(body);
         }

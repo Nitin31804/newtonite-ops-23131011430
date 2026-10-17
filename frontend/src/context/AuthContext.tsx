@@ -20,6 +20,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     async function loadAuth() {
       try {
+        let token = localStorage.getItem('newtonite_jwt_token');
+
+        // If no token exists, log in with default seeded lead credentials
+        if (!token) {
+          try {
+            const loginRes = await api.login('eng.lead@newtonite.internal', 'password123');
+            if (loginRes?.token) {
+              token = loginRes.token;
+              localStorage.setItem('newtonite_jwt_token', token);
+              localStorage.setItem('newtonite_active_user_id', loginRes.user.id);
+            }
+          } catch (lErr) {
+            console.warn('Initial login error:', lErr);
+          }
+        }
+
+        // Load authorized personas with valid Bearer token
         const loadedPersonas = await api.getPersonas();
         setUsers(loadedPersonas);
 
@@ -28,14 +45,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (matched) {
           setCurrentUser(matched);
           localStorage.setItem('newtonite_active_user_id', matched.id);
-          try {
-            const tokenData = await api.getPersonaToken(matched.id);
-            if (tokenData?.token) {
-              localStorage.setItem('newtonite_jwt_token', tokenData.token);
-            }
-          } catch (tErr) {
-            console.warn('Could not fetch JWT token, falling back to header auth:', tErr);
-          }
         }
       } catch (err) {
         console.error('Failed to load personas:', err);
@@ -47,13 +56,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const switchUser = async (userId: string) => {
-    try {
-      const tokenData = await api.getPersonaToken(userId);
-      if (tokenData?.token) {
-        localStorage.setItem('newtonite_jwt_token', tokenData.token);
+    const target = users.find((u) => u.id === userId);
+    if (target?.email) {
+      try {
+        const loginRes = await api.login(target.email, 'password123');
+        if (loginRes?.token) {
+          localStorage.setItem('newtonite_jwt_token', loginRes.token);
+        }
+      } catch (e) {
+        console.warn('Switch user login failed:', e);
       }
-    } catch (e) {
-      console.warn('Switch user token fetch failed:', e);
     }
     localStorage.setItem('newtonite_active_user_id', userId);
     window.location.reload();

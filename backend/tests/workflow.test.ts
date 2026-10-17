@@ -6,7 +6,7 @@ import { runSeed } from '../src/db/seed.js';
 
 describe('Critical Behavior: Workflow State Machine & Approval Gates', () => {
   beforeEach(async () => {
-    await runSeed(db);
+    await runSeed(db, { force: true });
   });
 
   it('Scenario 4a: Direct invalid jump (OPEN -> CLOSED) is rejected with 400 Bad Request', async () => {
