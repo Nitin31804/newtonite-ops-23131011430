@@ -114,14 +114,20 @@ const DashboardContent: React.FC = () => {
     }
   }, []);
 
-  // Initial load
+  // Load dashboard data when authenticated, or clear state when logged out
   useEffect(() => {
-    if (!isAuthLoading) {
+    if (!isAuthLoading && currentUser) {
       loadMeta();
       loadAwaitingItems();
       loadItems(0);
+    } else if (!isAuthLoading && !currentUser) {
+      setItems([]);
+      setAwaitingApprovalItems([]);
+      setSelectedItemData(null);
+      setSelectedItemId(null);
+      setStats(null);
     }
-  }, [isAuthLoading, loadMeta, loadAwaitingItems, loadItems]);
+  }, [isAuthLoading, currentUser, loadMeta, loadAwaitingItems, loadItems]);
 
   // Load detail whenever selectedItemId changes
   useEffect(() => {

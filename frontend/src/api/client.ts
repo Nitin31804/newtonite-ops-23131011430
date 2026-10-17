@@ -21,8 +21,10 @@ class ApiClient {
       'Content-Type': 'application/json',
     };
 
-    const activeUserId = localStorage.getItem('newtonite_active_user_id') || 'usr-eng-lead';
-    headers['x-user-id'] = activeUserId;
+    const activeUserId = localStorage.getItem('newtonite_active_user_id');
+    if (activeUserId) {
+      headers['x-user-id'] = activeUserId;
+    }
 
     const token = localStorage.getItem('newtonite_jwt_token');
     if (token) {
