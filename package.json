@@ -4,13 +4,13 @@
   "description": "Newtonite Operations Platform - Operations Under Pressure Challenge",
   "private": true,
   "scripts": {
-    "dev:backend": "npm --prefix backend run dev",
-    "dev:frontend": "npm --prefix frontend run dev",
-    "build:backend": "npm --prefix backend run build",
-    "build:frontend": "npm --prefix frontend run build",
-    "build": "npm run build:backend && npm run build:frontend",
-    "seed": "npm --prefix backend run seed",
-    "test": "npm --prefix backend run test"
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build:backend": "npm run build --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "seed": "npm run seed --prefix backend",
+    "test": "npm test --prefix backend"
   },
   "keywords": [
     "newtonite",

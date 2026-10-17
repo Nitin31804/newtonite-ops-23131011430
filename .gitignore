@@ -1,7 +1,10 @@
 node_modules
 dist
 .env
-data/*.sqlite*
+data/
+**/data/
+*.sqlite*
+*.sqlite3*
 *.log
 .DS_Store
 coverage
