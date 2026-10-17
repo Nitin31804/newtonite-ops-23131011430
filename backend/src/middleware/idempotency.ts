@@ -97,18 +97,6 @@ export async function idempotencyMiddleware(
       return;
     }
 
-    // Free the in-flight key if the client connection is aborted abruptly before response finishes
-    req.on('close', async () => {
-      if (!res.writableEnded) {
-        try {
-          const current = await db('idempotency_keys').where({ key: idempotencyKey, user_id: userId }).first();
-          if (current && current.status_code === 0) {
-            await db('idempotency_keys').where({ key: idempotencyKey, user_id: userId }).del();
-          }
-        } catch {}
-      }
-    });
-
     // Phase 2: Intercept response and await database update BEFORE flushing to client
     const originalJson = res.json.bind(res);
     res.json = function (body: any): Response {

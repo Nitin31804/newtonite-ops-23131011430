@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { User, WorkItem } from '../../types';
+import { WorkItem } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../api/client';
-import { ShieldCheck, Check, Sparkles } from 'lucide-react';
+import { ShieldCheck, Check, Sparkles, Lock, CheckCircle2 } from 'lucide-react';
 
 interface BentoApprovalQueueProps {
   awaitingItems: WorkItem[];
@@ -10,64 +10,40 @@ interface BentoApprovalQueueProps {
 }
 
 export const BentoApprovalQueue: React.FC<BentoApprovalQueueProps> = ({ awaitingItems, onRefresh }) => {
-  const { users, currentUser } = useAuth();
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const { currentUser, getUserRoleInTeam } = useAuth();
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Focus roster: Sarah Connor, Marcus Sterling, Rachel Zane (or fallback leads)
-  const roster = [
-    {
-      id: 'usr-eng-lead',
-      name: 'Sarah Connor',
-      role: 'Eng Lead',
-      avatarRing: 'border-emerald-400',
-      gradient: 'from-emerald-400 to-teal-500',
-    },
-    {
-      id: 'usr-pay-lead',
-      name: 'Sarah Khamer', // Displayed as in the mockup, mapped to pay lead
-      role: 'Payments Lead',
-      avatarRing: 'border-amber-400',
-      gradient: 'from-amber-400 to-rose-500',
-    },
-    {
-      id: 'usr-cmp-lead',
-      name: 'Alian Stulker', // Displayed as in the mockup, mapped to compliance lead
-      role: 'Compliance Lead',
-      avatarRing: 'border-cyan-400',
-      gradient: 'from-cyan-400 to-blue-500',
-    },
-  ];
-
-  const handleQuickVerify = async (leadName: string) => {
-    setVerifyingId(leadName);
+  const handleApprove = async (item: WorkItem) => {
+    if (!currentUser) return;
+    setApprovingId(item.id);
     setSuccessNotice(null);
+    setErrorMessage(null);
+
+    const userRole = getUserRoleInTeam(item.team_id);
+    if (userRole !== 'LEAD' && userRole !== 'ADMIN') {
+      setErrorMessage(`Permission denied: Your role in ${item.team_id} is ${userRole || 'NON-MEMBER'}. Requires LEAD or ADMIN.`);
+      setApprovingId(null);
+      return;
+    }
 
     try {
-      if (awaitingItems.length > 0) {
-        // Automatically approve the oldest pending approval item
-        const target = awaitingItems[0];
-        await api.transitionStatus(
-          target.id,
-          'RESOLVED',
-          `1-click fast verification signed by ${leadName}`,
-          target.version
-        );
-        setSuccessNotice(`Approved ${target.id} by ${leadName}`);
-        onRefresh();
-      } else {
-        // Fast sign-off confirmation
-        setSuccessNotice(`Standing approval active for ${leadName}`);
-      }
+      await api.transitionStatus(
+        item.id,
+        'RESOLVED',
+        `Verified and approved by ${currentUser.name} (${userRole})`,
+        item.version
+      );
+      setSuccessNotice(`Successfully approved ${item.id} as ${currentUser.name}`);
+      onRefresh();
     } catch (err: any) {
-      console.error('Verify error:', err);
+      console.error('Approval failed:', err);
+      setErrorMessage(err?.message || 'Failed to approve item');
     } finally {
-      setTimeout(() => {
-        setVerifyingId(null);
-      }, 600);
-      setTimeout(() => {
-        setSuccessNotice(null);
-      }, 3500);
+      setApprovingId(null);
+      setTimeout(() => setSuccessNotice(null), 4000);
+      setTimeout(() => setErrorMessage(null), 5000);
     }
   };
 
@@ -78,74 +54,114 @@ export const BentoApprovalQueue: React.FC<BentoApprovalQueueProps> = ({ awaiting
 
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-bold tracking-tight text-white font-sans">
-          Approval Queue & Team Roster
-        </h3>
-        {awaitingItems.length > 0 && (
+        <div className="flex items-center space-x-2">
+          <ShieldCheck className="w-4 h-4 text-purple-400" />
+          <h3 className="text-sm font-bold tracking-tight text-white font-sans">
+            Lead Approval Queue
+          </h3>
+        </div>
+        {awaitingItems.length > 0 ? (
           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 animate-pulse">
             {awaitingItems.length} Pending
+          </span>
+        ) : (
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            All Clear
           </span>
         )}
       </div>
 
       {successNotice && (
         <div className="mb-3 px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs flex items-center space-x-1.5">
-          <Check className="w-3.5 h-3.5" />
-          <span>{successNotice}</span>
+          <Check className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate">{successNotice}</span>
         </div>
       )}
 
-      {/* Team Roster with 1-click verify pills */}
-      <div className="space-y-3 flex-1 flex flex-col justify-center">
-        {roster.map((member) => {
-          const isVerifying = verifyingId === member.name;
-          return (
-            <div
-              key={member.id}
-              className="flex items-center justify-between py-1.5 px-2 rounded-xl hover:bg-slate-800/40 transition"
-            >
-              {/* Avatar & Name */}
-              <div className="flex items-center space-x-3">
-                <div
-                  className={`w-9 h-9 rounded-full bg-gradient-to-tr ${member.gradient} p-[2px] shadow-md`}
-                >
-                  <div className="w-full h-full rounded-full bg-slate-900 flex items-center justify-center text-xs font-bold text-white">
-                    {member.name.charAt(0)}
-                  </div>
-                </div>
-                <div>
-                  <h4 className="text-xs font-semibold text-slate-200">{member.name}</h4>
-                  <p className="text-[10px] text-slate-400">{member.role}</p>
-                </div>
-              </div>
+      {errorMessage && (
+        <div className="mb-3 px-3 py-1.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs flex items-center space-x-1.5">
+          <Lock className="w-3.5 h-3.5 flex-shrink-0 text-rose-400" />
+          <span className="truncate">{errorMessage}</span>
+        </div>
+      )}
 
-              {/* 1-click Verify Pill Button */}
-              <button
-                onClick={() => handleQuickVerify(member.name)}
-                disabled={isVerifying}
-                className="px-3 py-1.5 rounded-full glass-pill text-xs font-medium text-slate-300 hover:text-white hover:border-slate-400/50 shadow-sm flex items-center space-x-1.5 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
+      {/* Main Content Area */}
+      <div className="space-y-2.5 flex-1 flex flex-col justify-center">
+        {awaitingItems.length === 0 ? (
+          <div className="py-6 px-4 text-center rounded-2xl bg-slate-800/30 border border-slate-700/40 flex flex-col items-center justify-center space-y-2">
+            <CheckCircle2 className="w-8 h-8 text-emerald-400/80" />
+            <p className="text-xs font-semibold text-slate-300">
+              Zero Items Awaiting Sign-off
+            </p>
+            <p className="text-[11px] text-slate-500 max-w-[220px]">
+              When an engineer moves an incident to review, it will appear here for lead verification.
+            </p>
+          </div>
+        ) : (
+          awaitingItems.slice(0, 3).map((item) => {
+            const userRole = getUserRoleInTeam(item.team_id);
+            const canApprove = userRole === 'LEAD' || userRole === 'ADMIN';
+            const isApproving = approvingId === item.id;
+
+            return (
+              <div
+                key={item.id}
+                className="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-800/50 border border-slate-700/50 hover:border-slate-600 transition"
               >
-                {isVerifying ? (
-                  <>
-                    <div className="w-3 h-3 rounded-full border border-cyan-400 border-t-transparent animate-spin" />
-                    <span>Verifying...</span>
-                  </>
+                {/* Item Details */}
+                <div className="min-w-0 pr-2">
+                  <div className="flex items-center space-x-1.5">
+                    <span className="font-mono text-[10px] text-purple-300 font-bold">{item.id}</span>
+                    <span className="text-[10px] uppercase font-semibold text-slate-400 px-1.5 py-0.2 rounded bg-slate-900 border border-slate-700/60">
+                      {item.team_id.replace('team-', '')}
+                    </span>
+                  </div>
+                  <h4 className="text-xs font-medium text-slate-200 truncate max-w-[170px]" title={item.title}>
+                    {item.title}
+                  </h4>
+                </div>
+
+                {/* Dynamic Approval Button with Authentic Attribution */}
+                {canApprove ? (
+                  <button
+                    onClick={() => handleApprove(item)}
+                    disabled={isApproving}
+                    className="px-2.5 py-1.5 rounded-full glass-pill text-xs font-semibold text-emerald-300 hover:text-white hover:bg-emerald-500/20 border border-emerald-500/40 shadow-sm flex items-center space-x-1 transition-all disabled:opacity-50 flex-shrink-0"
+                    title={`Approve as ${currentUser?.name}`}
+                  >
+                    {isApproving ? (
+                      <>
+                        <div className="w-3 h-3 rounded-full border border-emerald-400 border-t-transparent animate-spin" />
+                        <span className="text-[10px]">Signing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3 h-3 text-emerald-400" />
+                        <span className="text-[10px]">Approve</span>
+                      </>
+                    )}
+                  </button>
                 ) : (
-                  <>
-                    <Sparkles className="w-3 h-3 text-cyan-400" />
-                    <span>1-click Verify</span>
-                  </>
+                  <span
+                    className="px-2 py-1 rounded-full text-[10px] font-medium text-slate-500 bg-slate-800/80 border border-slate-700 flex items-center space-x-1 flex-shrink-0"
+                    title={`Requires LEAD or ADMIN (Current role: ${userRole || 'Viewer/None'})`}
+                  >
+                    <Lock className="w-3 h-3 text-slate-500" />
+                    <span>Lead Only</span>
+                  </span>
                 )}
-              </button>
-            </div>
-          );
-        })}
+              </div>
+            );
+          })
+        )}
       </div>
 
-      {/* Footer hint */}
-      <div className="pt-3 border-t border-slate-800/80 mt-2 text-[11px] text-slate-500 flex items-center justify-between">
-        <span>Lead role sign-off verification</span>
-        <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
+      {/* Footer: Authentic Signer Attribution */}
+      <div className="pt-3 border-t border-slate-800/80 mt-2 text-[11px] text-slate-400 flex items-center justify-between">
+        <span className="truncate">
+          Signer: <span className="text-slate-200 font-semibold">{currentUser?.name || 'Unauthenticated'}</span>
+        </span>
+        <span className="text-[10px] text-purple-400 font-mono">RBAC Enforced</span>
       </div>
     </div>
   );

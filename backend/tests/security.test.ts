@@ -429,4 +429,80 @@ describe('Security Hardening & Edge-Case Defenses', () => {
       if (origDemoMode) process.env.DEMO_MODE = origDemoMode;
     }
   });
+
+  it('Defense 22: Upgrading a legacy database with existing users preserves operational data and backfills seed_completed marker', async () => {
+    // 1. Simulate an operational database by inserting a custom operational user and work item
+    const customUserId = 'usr-prod-existing-1';
+    await db('users').insert({
+      id: customUserId,
+      name: 'Existing Prod Engineer',
+      email: 'prod.engineer@internal.enterprise.com',
+      password_hash: 'secret_hash_value',
+    });
+
+    const customItemId = 'wi-prod-existing-item';
+    await db('work_items').insert({
+      id: customItemId,
+      title: 'Real production mission critical incident',
+      description: 'Must never be wiped by an upgrade restart',
+      type: 'incident',
+      team_id: 'team-eng',
+      created_by_id: customUserId,
+      status: 'IN_PROGRESS',
+      priority: 'URGENT',
+      version: 1,
+    });
+
+    // 2. Remove the seed_completed marker from system_metadata (simulating database created before marker was introduced)
+    await db('system_metadata').where({ key: 'seed_completed' }).del();
+    const markerBefore = await db('system_metadata').where({ key: 'seed_completed' }).first();
+    expect(markerBefore).toBeUndefined();
+
+    // 3. Run runSeed without force (simulating server reboot/upgrade)
+    await runSeed(db, { force: false });
+
+    // 4. Verify operational user and item are strictly preserved
+    const preservedItem = await db('work_items').where({ id: customItemId }).first();
+    expect(preservedItem).toBeTruthy();
+    expect(preservedItem.title).toBe('Real production mission critical incident');
+
+    const preservedUser = await db('users').where({ id: customUserId }).first();
+    expect(preservedUser).toBeTruthy();
+
+    // 5. Verify the seed_completed marker was automatically backfilled into system_metadata
+    const markerAfter = await db('system_metadata').where({ key: 'seed_completed' }).first();
+    expect(markerAfter).toBeTruthy();
+    expect(markerAfter.value).toBe('true');
+  });
+
+  it('Defense 23: In-flight idempotency key is maintained during execution and locks out concurrent retries with 409', async () => {
+    const lockKey = 'concurrent-race-key-' + Date.now();
+    const testUserId = 'usr-eng-lead';
+
+    // Simulate an ongoing execution holding an in-flight key (status_code: 0)
+    await db('idempotency_keys').insert({
+      key: lockKey,
+      user_id: testUserId,
+      endpoint: 'POST /api/items',
+      request_payload: JSON.stringify({ title: 'Payment anomaly', priority: 'URGENT' }),
+      status_code: 0,
+      response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+      created_at: new Date().toISOString(),
+    });
+
+    // Attempting a second concurrent call with the same idempotency key while the first is in-flight
+    const conflictRes = await request(app)
+      .post('/api/items')
+      .set('x-user-id', testUserId)
+      .set('Idempotency-Key', lockKey)
+      .send({ title: 'Payment anomaly', priority: 'URGENT' });
+
+    expect(conflictRes.status).toBe(409);
+    expect(conflictRes.body.error).toContain('Concurrent Request Conflict');
+
+    // Confirm the in-flight key was NOT prematurely cleared or deleted
+    const dbKey = await db('idempotency_keys').where({ key: lockKey, user_id: testUserId }).first();
+    expect(dbKey).toBeTruthy();
+    expect(dbKey.status_code).toBe(0);
+  });
 });

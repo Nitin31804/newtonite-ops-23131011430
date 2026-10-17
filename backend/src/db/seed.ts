@@ -17,13 +17,29 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
     return;
   }
 
-  // Check if database is already fully populated and seed has completed
-  const seedMarker = await database('system_metadata').where({ key: 'seed_completed' }).first().catch(() => null);
+  // Check if database is already populated
   const existingUsers = await database('users').count('* as count').first().catch(() => null);
   const userCount = Number(existingUsers?.count || 0);
+  const seedMarker = await database('system_metadata').where({ key: 'seed_completed' }).first().catch(() => null);
 
-  if (seedMarker?.value === 'true' && userCount > 0 && !options.force && process.env.FORCE_RESEED !== 'true') {
-    console.log(`Database already contains ${userCount} users with verified seed completion. Skipping seed to preserve operational data.`);
+  // If the database has existing users or a verified seed completion marker, NEVER wipe data on startup
+  if ((userCount > 0 || seedMarker?.value === 'true') && !options.force && process.env.FORCE_RESEED !== 'true') {
+    console.log(`Database already contains ${userCount} users. Skipping destructive seed to preserve operational data.`);
+
+    // Upgrade migration: If seed_completed marker was missing in legacy schema, backfill it now
+    if (!seedMarker || seedMarker.value !== 'true') {
+      try {
+        await database('system_metadata')
+          .insert({
+            key: 'seed_completed',
+            value: 'true',
+            updated_at: new Date().toISOString(),
+          })
+          .catch(() => {});
+      } catch {
+        // Ignored
+      }
+    }
     return;
   }
 

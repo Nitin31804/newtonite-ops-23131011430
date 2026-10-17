@@ -10,6 +10,7 @@ import { WorkItemList } from './components/WorkItemList';
 import { WorkItemDetail } from './components/WorkItemDetail';
 import { CreateItemModal } from './components/CreateItemModal';
 import { RaceSimulatorModal } from './components/RaceSimulatorModal';
+import { LoginModal } from './components/LoginModal';
 import { api } from './api/client';
 import { WorkItem, WorkItemDetailData, Team, StatsData } from './types';
 import { RefreshCw, LayoutGrid, Terminal } from 'lucide-react';
@@ -20,6 +21,7 @@ const DashboardContent: React.FC = () => {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [items, setItems] = useState<WorkItem[]>([]);
+  const [awaitingApprovalItems, setAwaitingApprovalItems] = useState<WorkItem[]>([]);
   const [pagination, setPagination] = useState({ total: 0, limit: 15, offset: 0, hasMore: false });
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -36,6 +38,7 @@ const DashboardContent: React.FC = () => {
   // Modals
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isRaceSimulatorOpen, setIsRaceSimulatorOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Load teams and stats
@@ -49,7 +52,17 @@ const DashboardContent: React.FC = () => {
     }
   }, []);
 
-  // Load items with current filter parameters
+  // Load awaiting approval items globally across the caller's teams
+  const loadAwaitingItems = useCallback(async () => {
+    try {
+      const res = await api.getItems({ status: 'AWAITING_APPROVAL', limit: 20 });
+      setAwaitingApprovalItems(res.items);
+    } catch (err) {
+      console.warn('Failed to load awaiting approval queue:', err);
+    }
+  }, []);
+
+  // Load items with current filter parameters (independent of selectedItemId to protect pagination)
   const loadItems = useCallback(
     async (offset = 0) => {
       try {
@@ -67,17 +80,20 @@ const DashboardContent: React.FC = () => {
         setItems(res.items);
         setPagination(res.pagination);
 
-        // Auto-select first item if none selected
-        if (!selectedItemId && res.items.length > 0) {
-          setSelectedItemId(res.items[0].id);
-        }
+        // Auto-select first item only if none currently active
+        setSelectedItemId((prev) => {
+          if (prev && res.items.some((item) => item.id === prev)) {
+            return prev;
+          }
+          return prev || (res.items[0]?.id ?? null);
+        });
       } catch (err) {
         console.error('Failed to load items:', err);
       } finally {
         setIsRefreshing(false);
       }
     },
-    [teamFilter, statusFilter, priorityFilter, activeView, searchQuery, pagination.limit, selectedItemId]
+    [teamFilter, statusFilter, priorityFilter, activeView, searchQuery, pagination.limit]
   );
 
   // Load item details
@@ -98,9 +114,10 @@ const DashboardContent: React.FC = () => {
   useEffect(() => {
     if (!isAuthLoading) {
       loadMeta();
+      loadAwaitingItems();
       loadItems(0);
     }
-  }, [isAuthLoading, loadMeta, loadItems]);
+  }, [isAuthLoading, loadMeta, loadAwaitingItems, loadItems]);
 
   // Load detail whenever selectedItemId changes
   useEffect(() => {
@@ -112,6 +129,7 @@ const DashboardContent: React.FC = () => {
   // Quick refresh button
   const handleFullRefresh = () => {
     loadMeta();
+    loadAwaitingItems();
     loadItems(pagination.offset);
     if (selectedItemId) {
       loadItemDetails(selectedItemId);
@@ -135,6 +153,7 @@ const DashboardContent: React.FC = () => {
       <Header
         onOpenCreateModal={() => setIsCreateModalOpen(true)}
         onOpenRaceSimulator={() => setIsRaceSimulatorOpen(true)}
+        onOpenLoginModal={() => setIsLoginModalOpen(true)}
       />
 
       <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 flex-1 flex flex-col space-y-8">
@@ -164,7 +183,7 @@ const DashboardContent: React.FC = () => {
 
               <div className="h-full">
                 <BentoApprovalQueue
-                  awaitingItems={items.filter((i) => i.status === 'AWAITING_APPROVAL')}
+                  awaitingItems={awaitingApprovalItems}
                   onRefresh={handleFullRefresh}
                 />
               </div>
@@ -281,6 +300,13 @@ const DashboardContent: React.FC = () => {
         onClose={() => setIsRaceSimulatorOpen(false)}
         items={items}
         onRefresh={handleFullRefresh}
+      />
+
+      {/* Enterprise Authentication Modal */}
+      <LoginModal
+        isOpen={isLoginModalOpen || (!isAuthLoading && !currentUser)}
+        onClose={() => setIsLoginModalOpen(false)}
+        canDismiss={!!currentUser}
       />
     </div>
   );

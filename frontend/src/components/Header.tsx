@@ -1,14 +1,19 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Zap, Plus, ChevronDown, Sparkles } from 'lucide-react';
+import { Zap, Plus, ChevronDown, Sparkles, LogIn, LogOut } from 'lucide-react';
 
 interface HeaderProps {
   onOpenCreateModal: () => void;
   onOpenRaceSimulator: () => void;
+  onOpenLoginModal: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenCreateModal, onOpenRaceSimulator }) => {
-  const { currentUser, users, switchUser } = useAuth();
+export const Header: React.FC<HeaderProps> = ({
+  onOpenCreateModal,
+  onOpenRaceSimulator,
+  onOpenLoginModal,
+}) => {
+  const { currentUser, users, switchUser, logout, isDemoMode } = useAuth();
 
   // Avatar initial color generator
   const getAvatarGradient = (id?: string) => {
@@ -74,32 +79,57 @@ export const Header: React.FC<HeaderProps> = ({ onOpenCreateModal, onOpenRaceSim
 
         {/* Center/Right: Floating Controls */}
         <div className="flex items-center space-x-3">
-          {/* Active Persona Segmented Switcher Pill */}
-          <div className="relative flex items-center glass-pill rounded-full px-3 py-1.5 border border-slate-700/80 hover:border-slate-600 transition">
-            <div
-              className={`w-6 h-6 rounded-full bg-gradient-to-tr ${getAvatarGradient(
-                currentUser?.id
-              )} flex items-center justify-center text-[10px] font-bold text-slate-950 mr-2 shadow-sm`}
-            >
-              {currentUser?.name ? currentUser.name.charAt(0) : 'U'}
-            </div>
+          {currentUser ? (
+            <>
+              {/* Active Persona Segmented Switcher Pill (in demo mode or with personas) */}
+              {users.length > 0 && (
+                <div className="relative flex items-center glass-pill rounded-full px-3 py-1.5 border border-slate-700/80 hover:border-slate-600 transition">
+                  <div
+                    className={`w-6 h-6 rounded-full bg-gradient-to-tr ${getAvatarGradient(
+                      currentUser.id
+                    )} flex items-center justify-center text-[10px] font-bold text-slate-950 mr-2 shadow-sm`}
+                  >
+                    {currentUser.name ? currentUser.name.charAt(0) : 'U'}
+                  </div>
 
-            <div className="flex items-center space-x-1 cursor-pointer">
-              <select
-                value={currentUser?.id || ''}
-                onChange={(e) => switchUser(e.target.value)}
-                className="appearance-none bg-transparent text-xs font-semibold text-slate-200 hover:text-white pr-5 cursor-pointer focus:outline-none"
-                aria-label="Active Persona Selector"
+                  <div className="flex items-center space-x-1 cursor-pointer">
+                    <select
+                      value={currentUser.id || ''}
+                      onChange={(e) => switchUser(e.target.value)}
+                      className="appearance-none bg-transparent text-xs font-semibold text-slate-200 hover:text-white pr-5 cursor-pointer focus:outline-none"
+                      aria-label="Active Persona Selector"
+                    >
+                      {users.map((u) => (
+                        <option key={u.id} value={u.id} className="bg-slate-900 text-slate-100 py-1">
+                          {u.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 pointer-events-none absolute right-3" />
+                  </div>
+                </div>
+              )}
+
+              {/* Sign Out Button */}
+              <button
+                onClick={logout}
+                className="p-1.5 rounded-full text-slate-400 hover:text-rose-300 hover:bg-slate-800 transition"
+                title="Sign Out"
+                aria-label="Sign Out"
               >
-                {users.map((u) => (
-                  <option key={u.id} value={u.id} className="bg-slate-900 text-slate-100 py-1">
-                    {u.name}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400 pointer-events-none absolute right-3" />
-            </div>
-          </div>
+                <LogOut className="w-4 h-4" />
+              </button>
+            </>
+          ) : (
+            /* Sign In Button when unauthenticated */
+            <button
+              onClick={onOpenLoginModal}
+              className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 text-xs font-semibold shadow-sm transition"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>Sign In</span>
+            </button>
+          )}
 
           {/* Race Condition Simulator Button */}
           <button

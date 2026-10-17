@@ -8,6 +8,10 @@ interface AuthContextType {
   switchUser: (userId: string) => void;
   getUserRoleInTeam: (teamId: string) => Role | null;
   isLoading: boolean;
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  logout: () => void;
+  isAuthenticated: boolean;
+  isDemoMode: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -39,24 +43,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // Load authorized personas with valid Bearer token
-        const loadedPersonas = await api.getPersonas();
-        setUsers(loadedPersonas);
+        if (token) {
+          try {
+            // Load authorized personas with valid Bearer token
+            const loadedPersonas = await api.getPersonas();
+            setUsers(loadedPersonas);
 
-        const savedUserId = localStorage.getItem('newtonite_active_user_id') || 'usr-eng-lead';
-        const matched = loadedPersonas.find((u) => u.id === savedUserId) || loadedPersonas[0];
-        if (matched) {
-          setCurrentUser(matched);
-          localStorage.setItem('newtonite_active_user_id', matched.id);
+            const savedUserId = localStorage.getItem('newtonite_active_user_id') || 'usr-eng-lead';
+            const matched = loadedPersonas.find((u) => u.id === savedUserId) || loadedPersonas[0];
+            if (matched) {
+              setCurrentUser(matched);
+              localStorage.setItem('newtonite_active_user_id', matched.id);
+            }
+          } catch (pErr) {
+            console.warn('Failed to load personas with token, token may be expired:', pErr);
+            localStorage.removeItem('newtonite_jwt_token');
+            setCurrentUser(null);
+          }
+        } else {
+          setCurrentUser(null);
         }
       } catch (err) {
         console.error('Failed to load personas:', err);
+        setCurrentUser(null);
       } finally {
         setIsLoading(false);
       }
     }
     loadAuth();
   }, []);
+
+  const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await api.login(email, password);
+      if (res?.token && res?.user) {
+        localStorage.setItem('newtonite_jwt_token', res.token);
+        localStorage.setItem('newtonite_active_user_id', res.user.id);
+        setCurrentUser(res.user);
+        try {
+          const loadedPersonas = await api.getPersonas();
+          setUsers(loadedPersonas);
+        } catch {
+          setUsers([res.user]);
+        }
+        return { success: true };
+      }
+      return { success: false, error: 'Authentication failed: No token received.' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Invalid email or password.' };
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('newtonite_jwt_token');
+    localStorage.removeItem('newtonite_active_user_id');
+    setCurrentUser(null);
+    setUsers([]);
+  };
 
   const switchUser = async (userId: string) => {
     const target = users.find((u) => u.id === userId);
@@ -83,7 +126,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, users, switchUser, getUserRoleInTeam, isLoading }}>
+    <AuthContext.Provider
+      value={{
+        currentUser,
+        users,
+        switchUser,
+        getUserRoleInTeam,
+        isLoading,
+        login,
+        logout,
+        isAuthenticated: !!currentUser,
+        isDemoMode: IS_DEMO_MODE,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
