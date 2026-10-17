@@ -11,12 +11,20 @@ const router = Router();
 router.use(authMiddleware);
 
 const createItemSchema = z.object({
-  title: z.string().min(3, 'Title must be at least 3 characters'),
-  description: z.string().min(5, 'Description must be at least 5 characters'),
+  title: z.string().min(3, 'Title must be at least 3 characters').max(255),
+  description: z.string().min(5, 'Description must be at least 5 characters').max(10000),
   type: z.enum(['incident', 'customer_issue', 'payment_investigation', 'compliance', 'operational_task']),
   priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']),
   team_id: z.string().min(1, 'Team ID is required'),
   assignee_id: z.string().nullable().optional(),
+});
+
+const updateItemSchema = z.object({
+  title: z.string().min(3, 'Title must be at least 3 characters').max(255).optional(),
+  description: z.string().min(5, 'Description must be at least 5 characters').max(10000).optional(),
+  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional(),
+  assignee_id: z.string().nullable().optional(),
+  version: z.number().int().positive('Version number must be a positive integer'),
 });
 
 /**
@@ -149,14 +157,14 @@ router.post('/:id/claim', async (req: AuthenticatedRequest, res: Response): Prom
 router.patch('/:id', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const itemId = req.params.id;
-    const { title, description, priority, assignee_id, version } = req.body;
+    const parsed = updateItemSchema.safeParse(req.body);
 
-    if (version === undefined || version === null) {
-      res.status(400).json({
-        error: "Optimistic locking requires 'version' in request body to prevent stale overwrites.",
-      });
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
       return;
     }
+
+    const { title, description, priority, assignee_id, version } = parsed.data;
 
     const existing = await db('work_items').where({ id: itemId }).first();
     if (!existing) {
@@ -167,6 +175,14 @@ router.patch('/:id', async (req: AuthenticatedRequest, res: Response): Promise<v
     const role = getUserRoleInTeam(req.user!, existing.team_id);
     if (!role || role === 'VIEWER') {
       res.status(403).json({ error: 'Access denied: Insufficient permissions to edit this item.' });
+      return;
+    }
+
+    // Ownership protection: If item is assigned to another engineer, non-Lead/Admin members cannot modify it
+    if (existing.assignee_id && existing.assignee_id !== req.user!.id && role === 'MEMBER') {
+      res.status(403).json({
+        error: 'Access denied: Only the assigned engineer, a Team Lead, or an Admin can edit this active work item.',
+      });
       return;
     }
 
@@ -214,6 +230,14 @@ router.post('/:id/transition', async (req: AuthenticatedRequest, res: Response):
     const role = getUserRoleInTeam(req.user!, existing.team_id);
     if (!role) {
       res.status(403).json({ error: 'Access denied: You are not a member of this team.' });
+      return;
+    }
+
+    // Ownership protection: If an item is assigned, other non-Lead members cannot transition it
+    if (existing.assignee_id && existing.assignee_id !== req.user!.id && role === 'MEMBER') {
+      res.status(403).json({
+        error: 'Access denied: Only the assigned engineer, a Team Lead, or an Admin can transition this active item.',
+      });
       return;
     }
 

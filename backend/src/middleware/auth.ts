@@ -33,8 +33,18 @@ export async function authMiddleware(
         return;
       }
     } 
-    // 2. Fallback to X-User-Id header for frictionless testing & demo personas
+    // 2. Controlled fallback to X-User-Id header ONLY in dev/test/demo mode
     else if (req.headers['x-user-id']) {
+      const isProduction = process.env.NODE_ENV === 'production';
+      const allowDemoAuth = process.env.ALLOW_DEV_DEMO_AUTH === 'true';
+
+      if (isProduction && !allowDemoAuth) {
+        res.status(401).json({
+          error: 'Security Error: Header-based authentication (X-User-Id) is disabled in production. Provide a valid Bearer JWT token.',
+        });
+        return;
+      }
+
       userId = req.headers['x-user-id'] as string;
     }
 

@@ -8,8 +8,25 @@ import statsRoutes from './routes/stats.js';
 export function createApp() {
   const app = express();
 
-  app.use(cors());
-  app.use(express.json());
+  const allowedOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+          callback(null, true);
+        } else {
+          callback(new Error('Blocked by CORS policy: unauthorized origin.'));
+        }
+      },
+      credentials: true,
+    })
+  );
+
+  // Guard against oversized payload attacks (DoS mitigation)
+  app.use(express.json({ limit: '1mb' }));
 
   // Health check
   app.get('/health', (req, res) => {

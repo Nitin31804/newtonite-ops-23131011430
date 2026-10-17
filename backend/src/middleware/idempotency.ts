@@ -28,6 +28,14 @@ export async function idempotencyMiddleware(
       .first();
 
     if (existing) {
+      // If currently processing in another thread
+      if (existing.status_code === 0) {
+        res.status(409).json({
+          error: 'Concurrent Request Conflict: An identical request with this Idempotency-Key is currently in-flight.',
+        });
+        return;
+      }
+
       res.setHeader('X-Idempotency-Hit', 'true');
       res.status(existing.status_code);
       try {
@@ -39,27 +47,51 @@ export async function idempotencyMiddleware(
       return;
     }
 
-    // Intercept response to store result
+    // Phase 1: Atomically claim the idempotency key with IN_FLIGHT status (status_code = 0)
+    try {
+      await db('idempotency_keys').insert({
+        key: idempotencyKey,
+        user_id: userId,
+        endpoint,
+        status_code: 0, // 0 = IN_FLIGHT reservation
+        response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+        created_at: new Date().toISOString(),
+      });
+    } catch (insertError: any) {
+      // Primary key constraint violation: Another concurrent request claimed this key first
+      const raced = await db('idempotency_keys').where({ key: idempotencyKey }).first();
+      if (raced && raced.status_code > 0) {
+        res.setHeader('X-Idempotency-Hit', 'true');
+        res.status(raced.status_code).json(JSON.parse(raced.response_body));
+        return;
+      }
+      res.status(409).json({
+        error: 'Concurrent Request Conflict: An identical request with this Idempotency-Key is currently in-flight.',
+      });
+      return;
+    }
+
+    // Phase 2: Intercept response to update reservation with finalized response
     const originalJson = res.json.bind(res);
     res.json = (body: any): Response => {
-      // Restore original method
       res.json = originalJson;
 
-      // Only cache successful or business conflict responses (2xx, 409)
       if (res.statusCode >= 200 && res.statusCode < 500) {
-        // Fire and forget insert into idempotency_keys
         db('idempotency_keys')
-          .insert({
-            key: idempotencyKey,
-            user_id: userId,
-            endpoint,
+          .where({ key: idempotencyKey, user_id: userId })
+          .update({
             status_code: res.statusCode,
             response_body: JSON.stringify(body),
-            created_at: new Date(),
           })
           .catch((err) => {
-            console.error('Failed to store idempotency record:', err);
+            console.error('Failed to update idempotency record:', err);
           });
+      } else {
+        // Remove in-flight reservation on server errors (5xx) so user can retry safely
+        db('idempotency_keys')
+          .where({ key: idempotencyKey, user_id: userId })
+          .del()
+          .catch(() => {});
       }
 
       return originalJson(body);

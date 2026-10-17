@@ -110,9 +110,32 @@ export class OutboxWorker {
     }
   }
 
+  /**
+   * Housekeeping: Purge stale idempotency keys (> 24 hours) and completed jobs (> 7 days)
+   */
+  async purgeStaleData(): Promise<{ purgedKeys: number; purgedJobs: number }> {
+    const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const cutoff7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const purgedKeys = await this.database('idempotency_keys')
+      .where('created_at', '<', cutoff24h)
+      .del();
+
+    const purgedJobs = await this.database('outbox_jobs')
+      .where('status', 'COMPLETED')
+      .where('created_at', '<', cutoff7d)
+      .del();
+
+    return { purgedKeys, purgedJobs };
+  }
+
   start(intervalMs = 3000): void {
     if (this.isRunning) return;
     this.isRunning = true;
+
+    // Run housekeeping cleanup on startup
+    this.purgeStaleData().catch((err) => console.error('Initial purge error:', err));
+
     this.intervalTimer = setInterval(async () => {
       try {
         await this.processBatch();
