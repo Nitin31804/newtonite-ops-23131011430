@@ -18,6 +18,10 @@ export function generateToken(user: { id: string; email: string }): string {
   return jwt.sign({ id: user.id, email: user.email }, getJwtSecret(), { expiresIn: '7d' });
 }
 
+export interface AuthenticatedRequest extends Request {
+  user?: AuthUser;
+}
+
 export async function authMiddleware(
   req: AuthenticatedRequest,
   res: Response,

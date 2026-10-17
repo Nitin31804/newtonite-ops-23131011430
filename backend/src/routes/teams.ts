@@ -23,9 +23,10 @@ router.get('/', async (req: AuthenticatedRequest, res: Response): Promise<void> 
  */
 router.get('/:id/members', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const teamId = req.params.id as string;
     const members = await db('team_memberships')
       .join('users', 'team_memberships.user_id', 'users.id')
-      .where({ 'team_memberships.team_id': req.params.id })
+      .where({ 'team_memberships.team_id': teamId })
       .select('users.id', 'users.name', 'users.email', 'team_memberships.role');
 
     res.json(members);

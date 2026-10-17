@@ -98,7 +98,8 @@ router.post('/', idempotencyMiddleware, async (req: AuthenticatedRequest, res: R
  */
 router.get('/:id', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const itemData = await itemService.getItemDetails(req.params.id);
+    const itemId = req.params.id as string;
+    const itemData = await itemService.getItemDetails(itemId);
 
     // Verify user has access to this team's work item
     const role = getUserRoleInTeam(req.user!, itemData.item.team_id);
@@ -126,7 +127,7 @@ router.get('/:id', async (req: AuthenticatedRequest, res: Response): Promise<voi
  */
 router.post('/:id/claim', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const itemId = req.params.id;
+    const itemId = req.params.id as string;
 
     // Check existing item team
     const existing = await db('work_items').where({ id: itemId }).first();
@@ -166,7 +167,7 @@ router.post('/:id/claim', async (req: AuthenticatedRequest, res: Response): Prom
  */
 router.patch('/:id', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const itemId = req.params.id;
+    const itemId = req.params.id as string;
     const parsed = updateItemSchema.safeParse(req.body);
 
     if (!parsed.success) {
@@ -223,7 +224,7 @@ router.patch('/:id', async (req: AuthenticatedRequest, res: Response): Promise<v
  */
 router.post('/:id/transition', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const itemId = req.params.id;
+    const itemId = req.params.id as string;
     const parsed = transitionSchema.safeParse(req.body);
 
     if (!parsed.success) {
@@ -290,7 +291,7 @@ router.post('/:id/transition', async (req: AuthenticatedRequest, res: Response):
  */
 router.post('/:id/comments', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const itemId = req.params.id;
+    const itemId = req.params.id as string;
     const parsed = commentSchema.safeParse(req.body);
 
     if (!parsed.success) {
