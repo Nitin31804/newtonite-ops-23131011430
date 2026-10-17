@@ -5,7 +5,7 @@
 [![Express](https://img.shields.io/badge/Express-5.0-000000?style=flat-square&logo=express&logoColor=white)](https://expressjs.com/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Tests](https://img.shields.io/badge/Tests-34%20Passed-10B981?style=flat-square&logo=jest&logoColor=white)](backend/tests/)
+[![Tests](https://img.shields.io/badge/Tests-35%20Passed-10B981?style=flat-square&logo=jest&logoColor=white)](backend/tests/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
 I built this project as my solution to the Newtonite full-stack engineering challenge. 
@@ -121,7 +121,7 @@ I wrote automated tests covering all dangerous concurrency and authorization edg
 # Run all automated tests
 npm test
 ```
-All 34 automated tests pass in ~4 seconds.
+All 35 automated tests pass in ~4 seconds.
 
 To test all frontend buttons, filters, and modals end-to-end against the running server:
 ```bash

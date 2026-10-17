@@ -80,13 +80,17 @@ const DashboardContent: React.FC = () => {
         setItems(res.items);
         setPagination(res.pagination);
 
-        // Auto-select first item only if none currently active
+        // Auto-select first visible item from the result set if previous selection is not in the visible list
         setSelectedItemId((prev) => {
           if (prev && res.items.some((item) => item.id === prev)) {
             return prev;
           }
-          return prev || (res.items[0]?.id ?? null);
+          return res.items[0]?.id ?? null;
         });
+
+        if (res.items.length === 0) {
+          setSelectedItemData(null);
+        }
       } catch (err) {
         console.error('Failed to load items:', err);
       } finally {

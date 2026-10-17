@@ -16,7 +16,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const IS_DEMO_MODE = (import.meta as any).env?.VITE_DEMO_MODE !== 'false';
+const IS_DEMO_MODE = (import.meta as any).env?.VITE_DEMO_MODE === 'true';
 const DEMO_PASSWORD = ((import.meta as any).env?.VITE_DEMO_PASSWORD as string) || 'password123';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -33,7 +33,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!token && IS_DEMO_MODE) {
           try {
             const loginRes = await api.login('eng.lead@newtonite.internal', DEMO_PASSWORD);
-            if (loginRes?.token) {
+            if (loginRes?.token && loginRes?.user) {
               token = loginRes.token;
               localStorage.setItem('newtonite_jwt_token', token);
               localStorage.setItem('newtonite_active_user_id', loginRes.user.id);
@@ -45,26 +45,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (token) {
           try {
-            // Load authorized personas with valid Bearer token
-            const loadedPersonas = await api.getPersonas();
-            setUsers(loadedPersonas);
+            // SINGLE SOURCE OF TRUTH: Derive current user strictly from verified JWT via /api/auth/me
+            const meRes = await api.getMe();
+            if (meRes?.user) {
+              setCurrentUser(meRes.user);
+              localStorage.setItem('newtonite_active_user_id', meRes.user.id);
+            } else {
+              throw new Error('No user payload returned from /api/auth/me');
+            }
 
-            const savedUserId = localStorage.getItem('newtonite_active_user_id') || 'usr-eng-lead';
-            const matched = loadedPersonas.find((u) => u.id === savedUserId) || loadedPersonas[0];
-            if (matched) {
-              setCurrentUser(matched);
-              localStorage.setItem('newtonite_active_user_id', matched.id);
+            // In demo mode, load personas list for evaluator quick-switching
+            if (IS_DEMO_MODE) {
+              try {
+                const loadedPersonas = await api.getPersonas();
+                setUsers(loadedPersonas);
+              } catch {
+                setUsers([meRes.user]);
+              }
+            } else {
+              setUsers([meRes.user]);
             }
           } catch (pErr) {
-            console.warn('Failed to load personas with token, token may be expired:', pErr);
+            console.warn('Failed to verify session token with /api/auth/me:', pErr);
             localStorage.removeItem('newtonite_jwt_token');
+            localStorage.removeItem('newtonite_active_user_id');
             setCurrentUser(null);
+            setUsers([]);
           }
         } else {
           setCurrentUser(null);
+          setUsers([]);
         }
       } catch (err) {
-        console.error('Failed to load personas:', err);
+        console.error('Failed to load authentication state:', err);
         setCurrentUser(null);
       } finally {
         setIsLoading(false);
@@ -80,10 +93,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.setItem('newtonite_jwt_token', res.token);
         localStorage.setItem('newtonite_active_user_id', res.user.id);
         setCurrentUser(res.user);
-        try {
-          const loadedPersonas = await api.getPersonas();
-          setUsers(loadedPersonas);
-        } catch {
+        if (IS_DEMO_MODE) {
+          try {
+            const loadedPersonas = await api.getPersonas();
+            setUsers(loadedPersonas);
+          } catch {
+            setUsers([res.user]);
+          }
+        } else {
           setUsers([res.user]);
         }
         return { success: true };
@@ -103,18 +120,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const switchUser = async (userId: string) => {
     const target = users.find((u) => u.id === userId);
-    if (target?.email) {
-      try {
-        const loginRes = await api.login(target.email, DEMO_PASSWORD);
-        if (loginRes?.token) {
-          localStorage.setItem('newtonite_jwt_token', loginRes.token);
-        }
-      } catch (e) {
-        console.warn('Switch user login failed:', e);
-      }
+    if (!target?.email) {
+      console.warn('Switch user target email not found');
+      return;
     }
-    localStorage.setItem('newtonite_active_user_id', userId);
-    window.location.reload();
+
+    try {
+      const loginRes = await api.login(target.email, DEMO_PASSWORD);
+      if (loginRes?.token && loginRes?.user) {
+        localStorage.setItem('newtonite_jwt_token', loginRes.token);
+        localStorage.setItem('newtonite_active_user_id', loginRes.user.id);
+        setCurrentUser(loginRes.user);
+        window.location.reload();
+      } else {
+        throw new Error('Failed to acquire token for target persona');
+      }
+    } catch (e) {
+      console.error('Switch user login failed:', e);
+      // Strictly do NOT alter active_user_id or trigger reload if login failed!
+    }
   };
 
   const getUserRoleInTeam = (teamId: string): Role | null => {

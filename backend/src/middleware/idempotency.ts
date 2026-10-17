@@ -105,25 +105,46 @@ export async function idempotencyMiddleware(
       (async () => {
         try {
           if (res.statusCode >= 200 && res.statusCode < 500) {
-            await db('idempotency_keys')
-              .where({ key: idempotencyKey, user_id: userId })
-              .update({
-                status_code: res.statusCode,
-                response_body: JSON.stringify(body),
-              });
+            // Business action succeeded: Persist completed response
+            // Retry up to 3 times to guard against transient database busy/lock states
+            let saved = false;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await db('idempotency_keys')
+                  .where({ key: idempotencyKey, user_id: userId })
+                  .update({
+                    status_code: res.statusCode,
+                    response_body: JSON.stringify(body),
+                  });
+                saved = true;
+                break;
+              } catch (retryErr) {
+                await new Promise((r) => setTimeout(r, 50));
+              }
+            }
+
+            if (!saved) {
+              console.error('CRITICAL: Failed to persist completed idempotency record.');
+              // NEVER delete the key if the business operation succeeded!
+              // Deleting allows duplicate execution on retry. Instead, mark status_code to prevent repeat execution.
+              await db('idempotency_keys')
+                .where({ key: idempotencyKey, user_id: userId })
+                .update({
+                  status_code: res.statusCode,
+                  response_body: JSON.stringify({ message: 'Request completed successfully (cached payload unavailable)' }),
+                })
+                .catch(() => {});
+            }
           } else {
-            // Remove in-flight reservation on server errors (5xx) so user can retry safely
+            // Business action failed with a 5xx server error:
+            // Release the in-flight reservation so the client can safely retry
             await db('idempotency_keys')
               .where({ key: idempotencyKey, user_id: userId })
-              .del();
+              .del()
+              .catch(() => {});
           }
         } catch (err) {
-          console.error('Failed to update idempotency record:', err);
-          // If updating the completed record fails, delete the in-flight key so it is NOT stranded
-          await db('idempotency_keys')
-            .where({ key: idempotencyKey, user_id: userId })
-            .del()
-            .catch(() => {});
+          console.error('Idempotency completion interceptor error:', err);
         } finally {
           originalJson(body);
         }

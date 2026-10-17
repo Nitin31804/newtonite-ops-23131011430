@@ -81,8 +81,8 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="flex items-center space-x-3">
           {currentUser ? (
             <>
-              {/* Active Persona Segmented Switcher Pill (in demo mode or with personas) */}
-              {users.length > 0 && (
+              {/* In Demo Mode: Segmented Persona Switcher Dropdown */}
+              {isDemoMode && users.length > 0 ? (
                 <div className="relative flex items-center glass-pill rounded-full px-3 py-1.5 border border-slate-700/80 hover:border-slate-600 transition">
                   <div
                     className={`w-6 h-6 rounded-full bg-gradient-to-tr ${getAvatarGradient(
@@ -107,6 +107,18 @@ export const Header: React.FC<HeaderProps> = ({
                     </select>
                     <ChevronDown className="w-3.5 h-3.5 text-slate-400 pointer-events-none absolute right-3" />
                   </div>
+                </div>
+              ) : (
+                /* In Production Mode: Authenticated User Profile Badge (No Persona Switcher) */
+                <div className="flex items-center space-x-2 glass-pill rounded-full px-3 py-1.5 border border-slate-700/80">
+                  <div
+                    className={`w-6 h-6 rounded-full bg-gradient-to-tr ${getAvatarGradient(
+                      currentUser.id
+                    )} flex items-center justify-center text-[10px] font-bold text-slate-950 shadow-sm`}
+                  >
+                    {currentUser.name ? currentUser.name.charAt(0) : 'U'}
+                  </div>
+                  <span className="text-xs font-semibold text-slate-200">{currentUser.name}</span>
                 </div>
               )}
 

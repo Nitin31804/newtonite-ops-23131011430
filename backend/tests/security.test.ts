@@ -505,4 +505,48 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     expect(dbKey).toBeTruthy();
     expect(dbKey.status_code).toBe(0);
   });
+
+  it('Defense 24: Background worker reclaims abandoned zombie in-flight keys (>5 min) while preserving active in-flight requests', async () => {
+    const { outboxWorker } = await import('../src/workers/outboxWorker.js');
+
+    const activeKey = 'active-key-' + Date.now();
+    const zombieKey = 'zombie-key-' + Date.now();
+
+    const thirtySecondsAgo = new Date(Date.now() - 30 * 1000).toISOString();
+    const sixMinutesAgo = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+
+    // 1. Insert an active in-flight key (running request)
+    await db('idempotency_keys').insert({
+      key: activeKey,
+      user_id: 'usr-eng-lead',
+      endpoint: 'POST /api/items',
+      request_payload: JSON.stringify({ title: 'Active incident' }),
+      status_code: 0,
+      response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+      created_at: thirtySecondsAgo,
+    });
+
+    // 2. Insert a zombie in-flight key abandoned by a crashed server process
+    await db('idempotency_keys').insert({
+      key: zombieKey,
+      user_id: 'usr-eng-lead',
+      endpoint: 'POST /api/items',
+      request_payload: JSON.stringify({ title: 'Crashed incident' }),
+      status_code: 0,
+      response_body: JSON.stringify({ status: 'IN_FLIGHT' }),
+      created_at: sixMinutesAgo,
+    });
+
+    // 3. Trigger worker batch processing
+    await outboxWorker.processBatch();
+
+    // 4. Verify zombie key (>5min) was reclaimed/deleted
+    const zombieInDb = await db('idempotency_keys').where({ key: zombieKey }).first();
+    expect(zombieInDb).toBeUndefined();
+
+    // 5. Verify active key (<5min) was NOT deleted and remains protected
+    const activeInDb = await db('idempotency_keys').where({ key: activeKey }).first();
+    expect(activeInDb).toBeTruthy();
+    expect(activeInDb.status_code).toBe(0);
+  });
 });

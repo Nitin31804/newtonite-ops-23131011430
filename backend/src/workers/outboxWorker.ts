@@ -46,7 +46,15 @@ export class OutboxWorker {
         updated_at: nowIso,
       });
 
-    // 2. Find pending jobs scheduled for execution
+    // 2. Crash recovery: Reclaim zombie in-flight idempotency keys abandoned by crashed server processes (>5 minutes)
+    const zombieIdemThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    await this.database('idempotency_keys')
+      .where('status_code', 0)
+      .where('created_at', '<=', zombieIdemThreshold)
+      .del()
+      .catch(() => {});
+
+    // 3. Find pending jobs scheduled for execution
     const jobs = await this.database('outbox_jobs')
       .where('status', 'PENDING')
       .where('next_run_at', '<=', nowIso)

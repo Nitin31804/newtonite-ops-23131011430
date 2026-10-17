@@ -59,6 +59,11 @@ class ApiClient {
     return this.handleResponse<any[]>(res);
   }
 
+  async getMe(): Promise<{ user: any }> {
+    const res = await fetch('/api/auth/me', { headers: this.getHeaders() });
+    return this.handleResponse<{ user: any }>(res);
+  }
+
   async login(email: string, password = 'password123'): Promise<{ token: string; user: any }> {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
