@@ -1,10 +1,20 @@
 # Newtonite Ops — Operations Under Pressure
 
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React](https://img.shields.io/badge/React-19.0-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
+[![Express](https://img.shields.io/badge/Express-5.0-000000?style=flat-square&logo=express&logoColor=white)](https://expressjs.com/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
+[![Tests](https://img.shields.io/badge/Tests-17%20Passed-10B981?style=flat-square&logo=jest&logoColor=white)](tests/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+
 I built this project as my solution to the Newtonite full-stack engineering challenge. 
 
 In high-stress environments—like triaging a production outage or investigating payment disputes—standard web apps tend to break in messy ways: two people claim the same ticket at once, someone accidentally overwrites another person's update, or double-clicks fire duplicate requests. 
 
 Instead of building dozens of half-finished screens, I focused on building a tight, rock-solid core that handles real-world concurrency, enforces strict server-side permissions, and keeps an immutable audit log of every change.
+
+![Newtonite Ops Bento Grid Dashboard](docs/screenshots/dashboard.png)
 
 ---
 
@@ -54,6 +64,10 @@ The brief emphasized engineering judgment over feature count. Here is how I solv
   ```
   If zero rows match, the second request immediately fails with `409 Conflict: "Item already claimed by another operator"`.
 * **Test:** `tests/concurrency.test.ts` fires two parallel claims; exactly one wins.
+
+| In-App Concurrency Race Simulator | Deterministic 409 Conflict Banner & Reload |
+| :---: | :---: |
+| ![Race Simulator](docs/screenshots/race_simulator.png) | ![Conflict Resolution](docs/screenshots/conflict_resolution.png) |
 
 ### 2. Optimistic Locking (Preventing Stale Overwrites)
 * **The Problem:** Operator A and Operator B both open a ticket at `v2`. Operator A saves an edit. Operator B saves 5 seconds later and would silently erase Operator A's changes.
