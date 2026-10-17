@@ -1,0 +1,25 @@
+{
+  "name": "newtonite-ops",
+  "version": "1.0.0",
+  "description": "Newtonite Operations Platform - Operations Under Pressure Challenge",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "seed": "npm --prefix backend run seed",
+    "test": "npm --prefix backend run test"
+  },
+  "keywords": [
+    "newtonite",
+    "operations",
+    "concurrency",
+    "idempotency",
+    "optimistic-locking",
+    "outbox-pattern"
+  ],
+  "author": "Newtonite Engineering Candidate",
+  "license": "ISC"
+}
