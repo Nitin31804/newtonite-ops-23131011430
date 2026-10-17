@@ -1,68 +1,124 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { ShieldCheck, Plus, UserCheck, AlertTriangle } from 'lucide-react';
+import { Zap, Plus, ChevronDown, Sparkles } from 'lucide-react';
 
 interface HeaderProps {
   onOpenCreateModal: () => void;
+  onOpenRaceSimulator: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenCreateModal }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenCreateModal, onOpenRaceSimulator }) => {
   const { currentUser, users, switchUser } = useAuth();
 
+  // Avatar initial color generator
+  const getAvatarGradient = (id?: string) => {
+    switch (id) {
+      case 'usr-eng-lead':
+        return 'from-emerald-400 to-teal-500';
+      case 'usr-pay-lead':
+        return 'from-purple-400 to-indigo-500';
+      case 'usr-cmp-lead':
+        return 'from-rose-400 to-pink-500';
+      case 'usr-admin':
+        return 'from-amber-400 to-orange-500';
+      default:
+        return 'from-cyan-400 to-blue-500';
+    }
+  };
+
   return (
-    <header className="bg-slate-900 border-b border-slate-800 text-white shadow-md sticky top-0 z-40">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          {/* Logo & Platform Info */}
-          <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-950 text-xl tracking-tighter shadow-inner">
-              N
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-bold text-lg tracking-tight text-white">Newtonite Ops</span>
-                <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Operations Under Pressure
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 hidden sm:block">
-                Internal Operational Work Coordination & Concurrency Engine
-              </p>
-            </div>
-          </div>
-
-          {/* Right Action Bar & Reviewer Persona Switcher */}
-          <div className="flex items-center space-x-4">
-            {/* Create Item Button */}
-            <button
-              onClick={onOpenCreateModal}
-              className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md text-xs font-semibold shadow transition duration-150"
+    <header className="sticky top-0 z-40 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-3 pb-3 w-full">
+      <div className="bento-card rounded-full px-5 py-2.5 flex items-center justify-between shadow-2xl backdrop-blur-2xl bg-slate-900/80 border border-slate-700/60">
+        {/* Left: Glowing Geometric Prism Logo & Brand */}
+        <div className="flex items-center space-x-3.5">
+          <div className="relative flex items-center justify-center">
+            {/* Ambient Prism Glow */}
+            <div className="absolute -inset-1 bg-gradient-to-r from-purple-500 via-cyan-400 to-emerald-400 rounded-full blur-md opacity-70 group-hover:opacity-100 transition duration-500" />
+            <svg
+              width="32"
+              height="32"
+              viewBox="0 0 32 32"
+              fill="none"
+              className="relative filter drop-shadow-[0_0_10px_rgba(168,85,247,0.7)]"
             >
-              <Plus className="w-4 h-4" />
-              <span>Create Item</span>
-            </button>
+              <polygon points="16,3 29,26 16,21" fill="url(#prism-facet-1)" />
+              <polygon points="16,3 3,26 16,21" fill="url(#prism-facet-2)" />
+              <polygon points="3,26 29,26 16,21" fill="url(#prism-facet-3)" />
+              <defs>
+                <linearGradient id="prism-facet-1" x1="16" y1="3" x2="29" y2="26" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#38bdf8" />
+                  <stop offset="1" stopColor="#818cf8" />
+                </linearGradient>
+                <linearGradient id="prism-facet-2" x1="16" y1="3" x2="3" y2="26" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#c084fc" />
+                  <stop offset="1" stopColor="#e879f9" />
+                </linearGradient>
+                <linearGradient id="prism-facet-3" x1="3" y1="26" x2="29" y2="26" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#06b6d4" />
+                  <stop offset="1" stopColor="#a855f7" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
 
-            {/* Persona Switcher for Live Demo Reviewers */}
-            <div className="flex items-center space-x-2 bg-slate-800/80 border border-slate-700/80 px-2.5 py-1 rounded-md">
-              <UserCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-              <div className="text-left">
-                <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                  Active Persona (Demo)
-                </label>
-                <select
-                  value={currentUser?.id || ''}
-                  onChange={(e) => switchUser(e.target.value)}
-                  className="bg-transparent text-xs text-white font-medium focus:outline-none cursor-pointer"
-                >
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id} className="bg-slate-900 text-slate-100">
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+          <div className="flex items-center space-x-2.5">
+            <span className="font-bold text-lg tracking-tight text-white font-sans">
+              Newtonite
+            </span>
+            <span className="hidden md:inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wider uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping inline-block" />
+              <span>LIVE OPS</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Center/Right: Floating Controls */}
+        <div className="flex items-center space-x-3">
+          {/* Active Persona Segmented Switcher Pill */}
+          <div className="relative flex items-center glass-pill rounded-full px-3 py-1.5 border border-slate-700/80 hover:border-slate-600 transition">
+            <div
+              className={`w-6 h-6 rounded-full bg-gradient-to-tr ${getAvatarGradient(
+                currentUser?.id
+              )} flex items-center justify-center text-[10px] font-bold text-slate-950 mr-2 shadow-sm`}
+            >
+              {currentUser?.name ? currentUser.name.charAt(0) : 'U'}
+            </div>
+
+            <div className="flex items-center space-x-1 cursor-pointer">
+              <select
+                value={currentUser?.id || ''}
+                onChange={(e) => switchUser(e.target.value)}
+                className="appearance-none bg-transparent text-xs font-semibold text-slate-200 hover:text-white pr-5 cursor-pointer focus:outline-none"
+                aria-label="Active Persona Selector"
+              >
+                {users.map((u) => (
+                  <option key={u.id} value={u.id} className="bg-slate-900 text-slate-100 py-1">
+                    {u.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 pointer-events-none absolute right-3" />
             </div>
           </div>
+
+          {/* Race Condition Simulator Button */}
+          <button
+            onClick={onOpenRaceSimulator}
+            className="hidden sm:flex items-center space-x-1.5 px-4 py-1.5 rounded-full glass-pill text-xs font-semibold text-amber-300 hover:text-amber-200 border border-amber-500/30 hover:border-amber-400/50 shadow-sm transition-all group"
+            title="Demonstrate concurrent atomic claims and optimistic locking conflict"
+          >
+            <Zap className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform fill-amber-400/30" />
+            <span>Race Condition Simulator</span>
+          </button>
+
+          {/* + New Item Iridescent Button */}
+          <button
+            onClick={onOpenCreateModal}
+            className="flex items-center space-x-1.5 px-4 py-1.5 bg-gradient-to-r from-teal-400 via-cyan-400 to-indigo-400 hover:opacity-95 text-slate-950 font-bold rounded-full text-xs shadow-lg shadow-cyan-500/25 transition-all transform hover:-translate-y-0.5 active:translate-y-0"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>New Item</span>
+          </button>
         </div>
       </div>
     </header>
