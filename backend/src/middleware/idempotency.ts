@@ -67,8 +67,8 @@ export async function idempotencyMiddleware(
     }
 
     // Phase 1: Atomically claim the idempotency key with IN_FLIGHT status (status_code = 0)
-    // Distributed lease: locked_until expires 60 seconds from now unless refreshed by heartbeat
-    const initialLease = new Date(Date.now() + 60 * 1000).toISOString();
+    // Distributed lease: locked_until set to 5 minutes from now, renewed every 20s by heartbeat
+    const initialLease = new Date(Date.now() + 5 * 60 * 1000).toISOString();
     try {
       await db('idempotency_keys').insert({
         key: idempotencyKey,
@@ -103,18 +103,23 @@ export async function idempotencyMiddleware(
       return;
     }
 
-    // Distributed Heartbeat: Extend locked_until every 15 seconds while request is executing
+    // Distributed Heartbeat: Extend locked_until every 20 seconds while request is executing
     // Works across multiple Node.js processes, containers, and survives client socket disconnects
     let heartbeatTimer: NodeJS.Timeout | null = setInterval(async () => {
       try {
-        const nextLease = new Date(Date.now() + 60 * 1000).toISOString();
-        await db('idempotency_keys')
+        const nextLease = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        const updated = await db('idempotency_keys')
           .where({ key: idempotencyKey, user_id: userId, status_code: 0 })
           .update({ locked_until: nextLease });
-      } catch {
-        // Best effort lease extension
+
+        if (updated === 0) {
+          // Key was finalized or transitioned
+          stopHeartbeat();
+        }
+      } catch (hbErr) {
+        console.warn(`[IDEMPOTENCY] Heartbeat lease renewal failed for ${idempotencyKey}:`, hbErr);
       }
-    }, 15000);
+    }, 20000);
 
     const stopHeartbeat = () => {
       if (heartbeatTimer) {

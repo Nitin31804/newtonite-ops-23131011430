@@ -47,8 +47,10 @@ export class OutboxWorker {
       });
 
     // 2. Crash recovery: Reclaim zombie in-flight idempotency keys abandoned by crashed server processes
-    // A key is an abandoned zombie ONLY if status_code === 0 AND its distributed heartbeat lease (locked_until) has expired.
-    // Active requests continuously refresh locked_until in the DB, protecting them across multiple processes and client drops.
+    // CRITICAL ARCHITECTURAL DEFENSE: NEVER delete an in-flight key!
+    // Deleting an expired in-flight key allows a subsequent retry to execute the mutating business logic a second time.
+    // Instead, transition the abandoned reservation to a terminal HTTP 504 Gateway Timeout record.
+    // This permanently guards idempotency: retries with that key receive the cached 504 response without re-executing.
     await this.database('idempotency_keys')
       .where('status_code', 0)
       .where(function () {
@@ -57,7 +59,13 @@ export class OutboxWorker {
             this.whereNull('locked_until').andWhere('created_at', '<=', new Date(Date.now() - 5 * 60 * 1000).toISOString());
           });
       })
-      .del()
+      .update({
+        status_code: 504,
+        response_body: JSON.stringify({
+          error: 'Gateway Timeout: In-flight execution lease expired before completion. Operation did not finalize.',
+        }),
+        locked_until: null,
+      })
       .catch(() => {});
 
     // 3. Find pending jobs scheduled for execution
@@ -217,7 +225,11 @@ export class OutboxWorker {
       if (webhookUrl) {
         const response = await fetch(webhookUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': notification.id,
+            'X-Newtonite-Delivery-Id': notification.id,
+          },
           body: JSON.stringify(notification),
           signal: AbortSignal.timeout(10000), // 10s fetch timeout to prevent worker loop hangs
         });

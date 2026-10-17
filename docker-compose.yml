@@ -36,6 +36,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-newtonite}:${POSTGRES_PASSWORD:-newtonite_secret}@postgres:5432/${POSTGRES_DB:-newtonite_ops}}
       JWT_SECRET: ${JWT_SECRET:-newtonite-dev-evaluator-secret-2026}
       ALLOW_DEV_DEMO_AUTH: ${ALLOW_DEV_DEMO_AUTH:-false}
+      # Production Day-0 Bootstrap Variables
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_ADMIN_NAME: ${INITIAL_ADMIN_NAME:-}
     ports:
       - "4000:4000"
     depends_on:

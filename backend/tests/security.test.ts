@@ -540,11 +540,13 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     // 3. Trigger worker batch processing
     await outboxWorker.processBatch();
 
-    // 4. Verify zombie key (>5min) was reclaimed/deleted
+    // 4. Verify zombie key (>5min) was transitioned to 504 Gateway Timeout (NEVER deleted)
     const zombieInDb = await db('idempotency_keys').where({ key: zombieKey }).first();
-    expect(zombieInDb).toBeUndefined();
+    expect(zombieInDb).toBeTruthy();
+    expect(zombieInDb.status_code).toBe(504);
+    expect(zombieInDb.locked_until).toBeNull();
 
-    // 5. Verify active key (<5min) was NOT deleted and remains protected
+    // 5. Verify active key (<5min) was NOT modified and remains in-flight (status_code 0)
     const activeInDb = await db('idempotency_keys').where({ key: activeKey }).first();
     expect(activeInDb).toBeTruthy();
     expect(activeInDb.status_code).toBe(0);
@@ -586,11 +588,22 @@ describe('Security Hardening & Edge-Case Defenses', () => {
 
     await outboxWorker.processBatch();
 
-    // Expired lease key must be cleaned up
+    // Expired lease key must be transitioned to 504 Gateway Timeout (not deleted, permanently protecting idempotency)
     const crashedInDb = await db('idempotency_keys').where({ key: crashedKey }).first();
-    expect(crashedInDb).toBeUndefined();
+    expect(crashedInDb).toBeTruthy();
+    expect(crashedInDb.status_code).toBe(504);
+    expect(crashedInDb.locked_until).toBeNull();
 
-    // Active lease key (even though created 10m ago) must NOT be deleted
+    // Verify a subsequent retry request with the crashed key receives the 504 without re-executing
+    const retryRes = await request(app)
+      .post('/api/items')
+      .set('x-user-id', 'usr-eng-lead')
+      .set('Idempotency-Key', crashedKey)
+      .send({ title: 'Dead process query' });
+    expect(retryRes.status).toBe(504);
+    expect(retryRes.body.error).toContain('Gateway Timeout');
+
+    // Active lease key (even though created 10m ago) must NOT be transitioned and remains protected (status_code 0)
     const slowInDb = await db('idempotency_keys').where({ key: slowActiveKey }).first();
     expect(slowInDb).toBeTruthy();
     expect(slowInDb.status_code).toBe(0);
@@ -623,6 +636,13 @@ describe('Security Hardening & Edge-Case Defenses', () => {
       // 1. First execution: webhook is dispatched
       await outboxWorker.processBatch();
       expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      // Verify idempotency headers were sent with external dispatch
+      const callArgs = fetchSpy.mock.calls[0];
+      expect(callArgs[1]?.headers).toMatchObject({
+        'Idempotency-Key': notifId,
+        'X-Newtonite-Delivery-Id': notifId,
+      });
 
       // Verify delivery record exists
       const deliveryRow = await db('outbox_deliveries').where({ id: notifId, status: 'DELIVERED' }).first();
