@@ -18,8 +18,27 @@ export async function initSchema(db: Knex): Promise<void> {
       table.string('email').notNullable().unique();
       table.string('name').notNullable();
       table.string('password_hash').notNullable();
+      table.boolean('is_active').notNullable().defaultTo(true);
+      table.integer('token_version').notNullable().defaultTo(1);
+      table.timestamp('deactivated_at').nullable();
       table.timestamp('created_at').defaultTo(db.fn.now());
     });
+  } else {
+    if (!(await db.schema.hasColumn('users', 'is_active'))) {
+      await db.schema.alterTable('users', (table) => {
+        table.boolean('is_active').notNullable().defaultTo(true);
+      });
+    }
+    if (!(await db.schema.hasColumn('users', 'token_version'))) {
+      await db.schema.alterTable('users', (table) => {
+        table.integer('token_version').notNullable().defaultTo(1);
+      });
+    }
+    if (!(await db.schema.hasColumn('users', 'deactivated_at'))) {
+      await db.schema.alterTable('users', (table) => {
+        table.timestamp('deactivated_at').nullable();
+      });
+    }
   }
 
   // 3. Team Memberships table

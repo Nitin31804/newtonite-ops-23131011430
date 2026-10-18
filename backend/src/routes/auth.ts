@@ -8,11 +8,11 @@ const router = Router();
 
 /**
  * Minimal personas endpoint for the demo switcher (Protected by Authentication)
- * Returns id, name, and team roles
+ * Returns id, name, email, and team roles
  */
 router.get('/personas', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const users = await db('users').select('id', 'name', 'email');
+    const users = await db('users').select('id', 'name', 'email', 'is_active', 'deactivated_at');
     const memberships = await db('team_memberships')
       .join('teams', 'team_memberships.team_id', 'teams.id')
       .select(
@@ -26,6 +26,8 @@ router.get('/personas', authMiddleware, async (req: AuthenticatedRequest, res: R
       id: u.id,
       name: u.name,
       email: u.email,
+      is_active: Boolean(u.is_active !== undefined ? u.is_active : true),
+      deactivated_at: u.deactivated_at,
       memberships: memberships.filter((m) => m.user_id === u.id),
     }));
 
@@ -41,7 +43,7 @@ router.get('/personas', authMiddleware, async (req: AuthenticatedRequest, res: R
  */
 router.get('/users', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const users = await db('users').select('id', 'name', 'email');
+    const users = await db('users').select('id', 'name', 'email', 'is_active', 'token_version', 'deactivated_at', 'created_at');
     const memberships = await db('team_memberships')
       .join('teams', 'team_memberships.team_id', 'teams.id')
       .select(
@@ -53,6 +55,7 @@ router.get('/users', authMiddleware, async (req: AuthenticatedRequest, res: Resp
 
     const result = users.map((u) => ({
       ...u,
+      is_active: Boolean(u.is_active !== undefined ? u.is_active : true),
       memberships: memberships.filter((m) => m.user_id === u.id),
     }));
 
@@ -95,7 +98,18 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const token = generateToken({ id: user.id, email: user.email });
+    // Defense: Account Deactivation Check
+    if (user.is_active === 0 || user.is_active === false) {
+      res.status(403).json({ error: 'Access Denied: This account has been deactivated. Please contact Security Operations.' });
+      return;
+    }
+
+    const token = generateToken({
+      id: user.id,
+      email: user.email,
+      token_version: user.token_version,
+    });
+
     const memberships = await db('team_memberships')
       .join('teams', 'team_memberships.team_id', 'teams.id')
       .where({ 'team_memberships.user_id': user.id })
@@ -107,12 +121,149 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
         id: user.id,
         name: user.name,
         email: user.email,
+        is_active: Boolean(user.is_active !== undefined ? user.is_active : true),
         memberships,
       },
     });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Internal login error' });
+  }
+});
+
+/**
+ * Deactivate user endpoint (Admin Only)
+ * Marks user as inactive, increments token_version to immediately revoke all active JWT sessions,
+ * unassigns active work items to prevent orphaned incidents, and records audit trails.
+ */
+router.post('/users/:id/deactivate', authMiddleware, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const targetUserId = req.params.id as string;
+    const isAdmin = req.user?.memberships.some((m) => m.role === 'ADMIN');
+
+    if (!isAdmin) {
+      res.status(403).json({ error: 'Access denied: Only an administrator can deactivate user accounts.' });
+      return;
+    }
+
+    if (req.user?.id === targetUserId) {
+      res.status(400).json({ error: 'Self-deactivation error: Administrators cannot deactivate their own account.' });
+      return;
+    }
+
+    const targetUser = await db('users').where({ id: targetUserId }).first();
+    if (!targetUser) {
+      res.status(404).json({ error: 'Target user does not exist.' });
+      return;
+    }
+
+    let unassignedCount = 0;
+    await db.transaction(async (trx) => {
+      // 1. Mark user as inactive & increment token_version (instantly invalidates all active JWT tokens)
+      await trx('users')
+        .where({ id: targetUserId })
+        .update({
+          is_active: false,
+          token_version: trx.raw('token_version + 1'),
+          deactivated_at: new Date().toISOString(),
+        });
+
+      // 2. Orphan Protection: Reclaim any active work items assigned to this user
+      const activeItems = await trx('work_items')
+        .where({ assignee_id: targetUserId })
+        .whereIn('status', ['OPEN', 'IN_PROGRESS'])
+        .select('id', 'title');
+
+      unassignedCount = activeItems.length;
+      if (activeItems.length > 0) {
+        await trx('work_items')
+          .where({ assignee_id: targetUserId })
+          .whereIn('status', ['OPEN', 'IN_PROGRESS'])
+          .update({
+            assignee_id: null,
+            status: 'OPEN',
+            updated_at: new Date().toISOString(),
+          });
+
+        for (const item of activeItems) {
+          await trx('activity_events').insert({
+            id: uuidv4(),
+            work_item_id: item.id,
+            actor_id: req.user!.id,
+            event_type: 'UNASSIGNED',
+            details: JSON.stringify({
+              previousAssigneeId: targetUserId,
+              reason: `Assignee account deactivated during offboarding by administrator (${req.user!.name})`,
+            }),
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      // 3. Queue an outbox security event for audit and webhook dispatch
+      await trx('outbox_jobs').insert({
+        id: uuidv4(),
+        event_type: 'USER_DEACTIVATED',
+        payload: JSON.stringify({
+          deactivatedUserId: targetUserId,
+          deactivatedEmail: targetUser.email,
+          deactivatedBy: req.user!.id,
+          unassignedWorkItems: unassignedCount,
+          timestamp: new Date().toISOString(),
+        }),
+        status: 'PENDING',
+        attempts: 0,
+        max_attempts: 3,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    });
+
+    res.json({
+      message: `User ${targetUser.name} (${targetUser.email}) deactivated successfully. All active sessions revoked.`,
+      unassignedWorkItems: unassignedCount,
+    });
+  } catch (error) {
+    console.error('User deactivation error:', error);
+    res.status(500).json({ error: 'Failed to deactivate user' });
+  }
+});
+
+/**
+ * Reactivate user endpoint (Admin Only)
+ * Marks user as active, clears deactivated_at, and increments token_version
+ * (ensuring old pre-deactivation tokens remain revoked).
+ */
+router.post('/users/:id/reactivate', authMiddleware, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const targetUserId = req.params.id as string;
+    const isAdmin = req.user?.memberships.some((m) => m.role === 'ADMIN');
+
+    if (!isAdmin) {
+      res.status(403).json({ error: 'Access denied: Only an administrator can reactivate user accounts.' });
+      return;
+    }
+
+    const targetUser = await db('users').where({ id: targetUserId }).first();
+    if (!targetUser) {
+      res.status(404).json({ error: 'Target user does not exist.' });
+      return;
+    }
+
+    await db('users')
+      .where({ id: targetUserId })
+      .update({
+        is_active: true,
+        token_version: db.raw('token_version + 1'), // Prior tokens remain revoked; fresh login required
+        deactivated_at: null,
+      });
+
+    res.json({
+      message: `User ${targetUser.name} (${targetUser.email}) reactivated successfully. User may now sign in.`,
+    });
+  } catch (error) {
+    console.error('User reactivation error:', error);
+    res.status(500).json({ error: 'Failed to reactivate user' });
   }
 });
 
@@ -224,6 +375,8 @@ router.post('/setup', async (req: Request, res: Response): Promise<void> => {
           email: normalizedEmail,
           name,
           password_hash: passwordHash,
+          is_active: true,
+          token_version: 1,
           created_at: new Date().toISOString(),
         });
 
@@ -241,7 +394,7 @@ router.post('/setup', async (req: Request, res: Response): Promise<void> => {
           updated_at: new Date().toISOString(),
         }).catch(() => {});
 
-        const token = generateToken({ id: adminId, email: normalizedEmail });
+        const token = generateToken({ id: adminId, email: normalizedEmail, token_version: 1 });
         const memberships = await trx('team_memberships')
           .join('teams', 'team_memberships.team_id', 'teams.id')
           .where({ 'team_memberships.user_id': adminId })

@@ -20,6 +20,8 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  is_active?: boolean;
+  deactivated_at?: string | null;
   memberships: Array<{
     team_id: string;
     team_name?: string;

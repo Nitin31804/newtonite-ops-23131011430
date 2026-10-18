@@ -43,6 +43,8 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
         email: normalizedEmail,
         name: process.env.INITIAL_ADMIN_NAME || 'System Administrator',
         password_hash: adminHash,
+        is_active: true,
+        token_version: 1,
         created_at: new Date().toISOString(),
       });
 
@@ -107,16 +109,16 @@ export async function runSeed(database: Knex = db, options: { force?: boolean } 
 
   // 2. Users
   const users = [
-    { id: 'usr-admin', email: 'admin@newtonite.internal', name: 'Alex Vance (Global Admin)', password_hash: passwordHash },
-    { id: 'usr-eng-lead', email: 'eng.lead@newtonite.internal', name: 'Sarah Connor (Eng Lead)', password_hash: passwordHash },
-    { id: 'usr-eng-1', email: 'eng.member1@newtonite.internal', name: 'David Kim (Senior Eng)', password_hash: passwordHash },
-    { id: 'usr-eng-2', email: 'eng.member2@newtonite.internal', name: 'Elena Rostova (DevOps)', password_hash: passwordHash },
-    { id: 'usr-pay-lead', email: 'pay.lead@newtonite.internal', name: 'Marcus Sterling (Payments Lead)', password_hash: passwordHash },
-    { id: 'usr-pay-1', email: 'pay.member@newtonite.internal', name: 'Chloe Dubois (Payment Analyst)', password_hash: passwordHash },
-    { id: 'usr-cmp-lead', email: 'cmp.lead@newtonite.internal', name: 'Rachel Zane (Chief Compliance)', password_hash: passwordHash },
-    { id: 'usr-cmp-1', email: 'cmp.member@newtonite.internal', name: 'Harvey Specter (Legal Counsel)', password_hash: passwordHash },
-    { id: 'usr-ops-1', email: 'ops.member@newtonite.internal', name: 'Jordan Hayes (Ops Specialist)', password_hash: passwordHash },
-    { id: 'usr-viewer', email: 'viewer@newtonite.internal', name: 'Taylor Reed (Auditor / Viewer)', password_hash: passwordHash },
+    { id: 'usr-admin', email: 'admin@newtonite.internal', name: 'Alex Vance (Global Admin)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-eng-lead', email: 'eng.lead@newtonite.internal', name: 'Sarah Connor (Eng Lead)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-eng-1', email: 'eng.member1@newtonite.internal', name: 'David Kim (Senior Eng)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-eng-2', email: 'eng.member2@newtonite.internal', name: 'Elena Rostova (DevOps)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-pay-lead', email: 'pay.lead@newtonite.internal', name: 'Marcus Sterling (Payments Lead)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-pay-1', email: 'pay.member@newtonite.internal', name: 'Chloe Dubois (Payment Analyst)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-cmp-lead', email: 'cmp.lead@newtonite.internal', name: 'Rachel Zane (Chief Compliance)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-cmp-1', email: 'cmp.member@newtonite.internal', name: 'Harvey Specter (Legal Counsel)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-ops-1', email: 'ops.member@newtonite.internal', name: 'Jordan Hayes (Ops Specialist)', password_hash: passwordHash, is_active: true, token_version: 1 },
+    { id: 'usr-viewer', email: 'viewer@newtonite.internal', name: 'Taylor Reed (Auditor / Viewer)', password_hash: passwordHash, is_active: true, token_version: 1 },
   ];
 
   // 3. Team Memberships

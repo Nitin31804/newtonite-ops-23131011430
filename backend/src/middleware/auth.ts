@@ -14,8 +14,16 @@ function getJwtSecret(): string {
   return secret;
 }
 
-export function generateToken(user: { id: string; email: string }): string {
-  return jwt.sign({ id: user.id, email: user.email }, getJwtSecret(), { expiresIn: '7d' });
+export function generateToken(user: { id: string; email: string; token_version?: number }): string {
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      token_version: user.token_version !== undefined ? Number(user.token_version) : 1,
+    },
+    getJwtSecret(),
+    { expiresIn: '7d' }
+  );
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -29,14 +37,16 @@ export async function authMiddleware(
 ): Promise<void> {
   try {
     let userId: string | null = null;
+    let decodedTokenVersion: number | undefined = undefined;
 
     // 1. Check Authorization Bearer Header
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
       try {
-        const decoded = jwt.verify(token, getJwtSecret()) as { id: string; email: string };
+        const decoded = jwt.verify(token, getJwtSecret()) as { id: string; email: string; token_version?: number };
         userId = decoded.id;
+        decodedTokenVersion = decoded.token_version;
       } catch (err) {
         res.status(401).json({ error: 'Invalid or expired authentication token.' });
         return;
@@ -69,6 +79,20 @@ export async function authMiddleware(
       return;
     }
 
+    // Defense: Account Deactivation Check
+    if (userRow.is_active === 0 || userRow.is_active === false) {
+      res.status(403).json({ error: 'Account has been deactivated. Please contact your security administrator.' });
+      return;
+    }
+
+    // Defense: Cryptographic Token Revocation (Stateless JWT Invalidation)
+    if (decodedTokenVersion !== undefined && userRow.token_version !== undefined) {
+      if (Number(decodedTokenVersion) !== Number(userRow.token_version)) {
+        res.status(401).json({ error: 'Session revoked. Token is no longer valid due to credential rotation or offboarding.' });
+        return;
+      }
+    }
+
     const memberships = await db('team_memberships')
       .join('teams', 'team_memberships.team_id', 'teams.id')
       .where({ 'team_memberships.user_id': userId })
@@ -82,6 +106,9 @@ export async function authMiddleware(
       id: userRow.id,
       email: userRow.email,
       name: userRow.name,
+      is_active: Boolean(userRow.is_active !== undefined ? userRow.is_active : true),
+      token_version: Number(userRow.token_version !== undefined ? userRow.token_version : 1),
+      deactivated_at: userRow.deactivated_at,
       created_at: userRow.created_at,
       memberships,
     };

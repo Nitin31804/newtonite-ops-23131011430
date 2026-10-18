@@ -11,6 +11,7 @@ import { WorkItemDetail } from './components/WorkItemDetail';
 import { CreateItemModal } from './components/CreateItemModal';
 import { RaceSimulatorModal } from './components/RaceSimulatorModal';
 import { LoginModal } from './components/LoginModal';
+import { UserLifecycleModal } from './components/UserLifecycleModal';
 import { api } from './api/client';
 import { WorkItem, WorkItemDetailData, Team, StatsData } from './types';
 import { RefreshCw, LayoutGrid, Terminal } from 'lucide-react';
@@ -39,6 +40,7 @@ const DashboardContent: React.FC = () => {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isRaceSimulatorOpen, setIsRaceSimulatorOpen] = useState(false);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isRosterModalOpen, setIsRosterModalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Load teams and stats
@@ -164,6 +166,7 @@ const DashboardContent: React.FC = () => {
         onOpenCreateModal={() => setIsCreateModalOpen(true)}
         onOpenRaceSimulator={() => setIsRaceSimulatorOpen(true)}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
+        onOpenRosterModal={() => setIsRosterModalOpen(true)}
       />
 
       <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 flex-1 flex flex-col space-y-8">
@@ -317,6 +320,13 @@ const DashboardContent: React.FC = () => {
         isOpen={isLoginModalOpen || (!isAuthLoading && !currentUser)}
         onClose={() => setIsLoginModalOpen(false)}
         canDismiss={!!currentUser}
+      />
+
+      {/* Enterprise Roster & Offboarding Lifecycle Modal */}
+      <UserLifecycleModal
+        isOpen={isRosterModalOpen}
+        onClose={() => setIsRosterModalOpen(false)}
+        onRefreshIncidents={handleFullRefresh}
       />
     </div>
   );

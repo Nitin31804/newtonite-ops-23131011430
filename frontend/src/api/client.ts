@@ -198,6 +198,24 @@ class ApiClient {
     });
     return this.handleResponse(res);
   }
+
+  async deactivateUser(userId: string, reason?: string): Promise<{ message: string; unassignedWorkItems: number }> {
+    const res = await fetch(`/api/auth/users/${userId}/deactivate`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ reason: reason || 'Enterprise offboarding' }),
+    });
+    return this.handleResponse(res);
+  }
+
+  async reactivateUser(userId: string): Promise<{ message: string }> {
+    const res = await fetch(`/api/auth/users/${userId}/reactivate`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({}),
+    });
+    return this.handleResponse(res);
+  }
 }
 
 export const api = new ApiClient();

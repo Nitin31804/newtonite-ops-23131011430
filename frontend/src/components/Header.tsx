@@ -1,17 +1,19 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Zap, Plus, ChevronDown, Sparkles, LogIn, LogOut } from 'lucide-react';
+import { Zap, Plus, ChevronDown, Sparkles, LogIn, LogOut, Users } from 'lucide-react';
 
 interface HeaderProps {
   onOpenCreateModal: () => void;
   onOpenRaceSimulator: () => void;
   onOpenLoginModal: () => void;
+  onOpenRosterModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onOpenCreateModal,
   onOpenRaceSimulator,
   onOpenLoginModal,
+  onOpenRosterModal,
 }) => {
   const { currentUser, users, switchUser, logout, isDemoMode } = useAuth();
 
@@ -140,6 +142,18 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <LogIn className="w-3.5 h-3.5" />
               <span>Sign In</span>
+            </button>
+          )}
+
+          {/* Team Roster & Offboarding Security Button */}
+          {currentUser && onOpenRosterModal && (
+            <button
+              onClick={onOpenRosterModal}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full glass-pill text-xs font-semibold text-rose-300 hover:text-white border border-rose-500/30 hover:border-rose-400/50 shadow-sm transition-all"
+              title="View Enterprise Team Roster & Manage Offboarding Security"
+            >
+              <Users className="w-3.5 h-3.5 text-rose-400" />
+              <span className="hidden md:inline">Roster & Offboarding</span>
             </button>
           )}
 

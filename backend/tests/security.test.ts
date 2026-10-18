@@ -732,4 +732,128 @@ describe('Security Hardening & Edge-Case Defenses', () => {
       delete process.env.SETUP_TOKEN;
     }
   });
+
+  it('Defense 28: Offboarding deactivation blocks password login and immediately revokes active JWT tokens via token_version', async () => {
+    // 1. David Kim (usr-eng-1) logs in and obtains a valid JWT token
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'eng.member1@newtonite.internal',
+        password: 'password123',
+      });
+    expect(loginRes.status).toBe(200);
+    const activeEmployeeToken = loginRes.body.token;
+    expect(activeEmployeeToken).toBeTruthy();
+
+    // 2. David Kim can perform operational requests with this token
+    const initialReq = await request(app)
+      .get('/api/items')
+      .set('Authorization', `Bearer ${activeEmployeeToken}`);
+    expect(initialReq.status).toBe(200);
+
+    // 3. Non-admin attempting to deactivate user -> 403 Forbidden
+    const unauthDeact = await request(app)
+      .post('/api/auth/users/usr-eng-1/deactivate')
+      .set('x-user-id', 'usr-eng-lead')
+      .send({ reason: 'Unauthorized deactivation attempt' });
+    expect(unauthDeact.status).toBe(403);
+    expect(unauthDeact.body.error).toContain('Only an administrator can deactivate user accounts');
+
+    // 4. Admin deactivates their own account -> 400 Bad Request (Guard against locking out the platform)
+    const selfDeact = await request(app)
+      .post('/api/auth/users/usr-admin/deactivate')
+      .set('x-user-id', 'usr-admin')
+      .send({ reason: 'Self deactivation test' });
+    expect(selfDeact.status).toBe(400);
+    expect(selfDeact.body.error).toContain('Administrators cannot deactivate their own account');
+
+    // 5. Global Admin deactivates David Kim (e.g. employee resignation/offboarding)
+    const deactRes = await request(app)
+      .post('/api/auth/users/usr-eng-1/deactivate')
+      .set('x-user-id', 'usr-admin')
+      .send({ reason: 'Employee resigned' });
+    expect(deactRes.status).toBe(200);
+    expect(deactRes.body.message).toContain('deactivated successfully');
+
+    // Verify DB state: is_active is false, token_version incremented from 1 to 2
+    const dbUser = await db('users').where({ id: 'usr-eng-1' }).first();
+    expect(Boolean(dbUser.is_active)).toBe(false);
+    expect(dbUser.token_version).toBe(2);
+    expect(dbUser.deactivated_at).toBeTruthy();
+
+    // 6. David Kim tries using the PREVIOUS 7-DAY JWT token while account is deactivated -> Instantly REJECTED with 403 Forbidden
+    const deactivatedTokenReq = await request(app)
+      .get('/api/items')
+      .set('Authorization', `Bearer ${activeEmployeeToken}`);
+    expect(deactivatedTokenReq.status).toBe(403);
+    expect(deactivatedTokenReq.body.error).toContain('Account has been deactivated');
+
+    // 7. David Kim tries logging in fresh with correct password while deactivated -> REJECTED with 403 Forbidden
+    const freshLoginAttempt = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'eng.member1@newtonite.internal',
+        password: 'password123',
+      });
+    expect(freshLoginAttempt.status).toBe(403);
+    expect(freshLoginAttempt.body.error).toContain('This account has been deactivated');
+
+    // 8. Admin reactivates account (is_active: true, token_version bumped to 3).
+    // Now account is active, BUT the old 7-day token (version 1) MUST STILL be rejected with 401 Unauthorized (Session Revoked)!
+    await request(app)
+      .post('/api/auth/users/usr-eng-1/reactivate')
+      .set('x-user-id', 'usr-admin');
+
+    const staleTokenReq = await request(app)
+      .get('/api/items')
+      .set('Authorization', `Bearer ${activeEmployeeToken}`);
+    expect(staleTokenReq.status).toBe(401);
+    expect(staleTokenReq.body.error).toContain('Session revoked');
+  });
+
+  it('Defense 29: User deactivation reclaims in-flight assigned incidents and appends immutable audit events', async () => {
+    // 1. Assign wi-101 to usr-eng-1 in IN_PROGRESS status
+    await db('work_items').where({ id: 'wi-101' }).update({
+      assignee_id: 'usr-eng-1',
+      status: 'IN_PROGRESS',
+    });
+
+    // 2. Admin deactivates usr-eng-1
+    const deactRes = await request(app)
+      .post('/api/auth/users/usr-eng-1/deactivate')
+      .set('x-user-id', 'usr-admin')
+      .send({ reason: 'Emergency offboarding' });
+    expect(deactRes.status).toBe(200);
+    expect(deactRes.body.unassignedWorkItems).toBeGreaterThanOrEqual(1);
+
+    // 3. Verify wi-101 is no longer assigned to usr-eng-1 and reset to OPEN so team can triage
+    const updatedItem = await db('work_items').where({ id: 'wi-101' }).first();
+    expect(updatedItem.assignee_id).toBeNull();
+    expect(updatedItem.status).toBe('OPEN');
+
+    // 4. Verify immutable activity_event recorded the offboarding unassignment
+    const auditEvent = await db('activity_events')
+      .where({ work_item_id: 'wi-101', event_type: 'UNASSIGNED' })
+      .first();
+    expect(auditEvent).toBeTruthy();
+    expect(auditEvent.actor_id).toBe('usr-admin');
+    expect(auditEvent.details).toContain('offboarding');
+
+    // 5. Admin reactivates usr-eng-1
+    const reactivateRes = await request(app)
+      .post('/api/auth/users/usr-eng-1/reactivate')
+      .set('x-user-id', 'usr-admin');
+    expect(reactivateRes.status).toBe(200);
+    expect(reactivateRes.body.message).toContain('reactivated successfully');
+
+    // Verify user can log in again with new token
+    const reLogin = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'eng.member1@newtonite.internal',
+        password: 'password123',
+      });
+    expect(reLogin.status).toBe(200);
+    expect(reLogin.body.token).toBeTruthy();
+  });
 });

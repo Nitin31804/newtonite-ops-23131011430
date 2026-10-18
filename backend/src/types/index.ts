@@ -20,6 +20,9 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  is_active?: boolean;
+  token_version?: number;
+  deactivated_at?: string | null;
   created_at: string;
 }
 
@@ -39,6 +42,9 @@ export interface TeamMembership {
 }
 
 export interface AuthUser extends User {
+  is_active: boolean;
+  token_version: number;
+  deactivated_at?: string | null;
   memberships: Array<{
     team_id: string;
     team_name?: string;
