@@ -70,6 +70,38 @@ export function createApp() {
     res.status(404).json({ error: `Route ${req.method} ${req.path} not found.` });
   });
 
+  // Global centralized error handler (Prevents stack trace leaks & returns uniform JSON)
+  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    // 1. Handle JSON parsing errors from body-parser
+    if (err instanceof SyntaxError && 'body' in err) {
+      res.status(400).json({
+        error: 'Malformed JSON payload: Request body contains invalid JSON syntax.',
+      });
+      return;
+    }
+
+    // 2. Handle Payload Too Large errors
+    if (err.type === 'entity.too.large') {
+      res.status(413).json({
+        error: 'Payload Too Large: Request entity exceeds 1MB limit.',
+      });
+      return;
+    }
+
+    // 3. Handle CORS errors
+    if (err.message && err.message.includes('Blocked by CORS policy')) {
+      res.status(403).json({ error: err.message });
+      return;
+    }
+
+    // 4. Default internal error without leaking stack traces or local file paths
+    console.error(`[INTERNAL ERROR] ${req.method} ${req.path}:`, err);
+    const statusCode = err.status || err.statusCode || 500;
+    res.status(statusCode).json({
+      error: statusCode === 500 ? 'Internal Server Error' : err.message || 'An unexpected error occurred.',
+    });
+  });
+
   return app;
 }
 

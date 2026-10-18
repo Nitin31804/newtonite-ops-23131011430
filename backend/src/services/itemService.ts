@@ -183,6 +183,12 @@ export class ItemService {
    */
   async claimItem(itemId: string, actorId: string) {
     return await db.transaction(async (trx) => {
+      // Verify actor account is active
+      const actor = await trx('users').where({ id: actorId }).first();
+      if (!actor || actor.is_active === 0 || actor.is_active === false) {
+        throw new BadRequestError(`Cannot claim work item: User '${actorId}' is inactive or has been offboarded.`);
+      }
+
       // Execute conditional update: only update if OPEN and assignee_id is currently NULL
       const updatedRows = await trx('work_items')
         .where({ id: itemId, status: 'OPEN' })
@@ -261,14 +267,21 @@ export class ItemService {
         throw new NotFoundError(`Work item with id '${itemId}' not found.`);
       }
 
-      // Verify that assignee belongs to the work item's team
-      if (data.assignee_id) {
+      // Verify that assignee belongs to the work item's team and is active
+      const targetAssignee = data.assignee_id ? data.assignee_id.trim() : null;
+      if (targetAssignee) {
         const membership = await trx('team_memberships')
-          .where({ user_id: data.assignee_id, team_id: currentItem.team_id })
+          .where({ user_id: targetAssignee, team_id: currentItem.team_id })
           .first();
         if (!membership) {
           throw new BadRequestError(
-            `Cannot assign work item: User '${data.assignee_id}' is not a member of team '${currentItem.team_id}'.`
+            `Cannot assign work item: User '${targetAssignee}' is not a member of team '${currentItem.team_id}'.`
+          );
+        }
+        const assigneeUser = await trx('users').where({ id: targetAssignee }).first();
+        if (!assigneeUser || assigneeUser.is_active === 0 || assigneeUser.is_active === false) {
+          throw new BadRequestError(
+            `Cannot assign work item: User '${targetAssignee}' is inactive or has been offboarded.`
           );
         }
       }
@@ -428,14 +441,21 @@ export class ItemService {
     const itemId = `wi-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 
     return await db.transaction(async (trx) => {
-      // Verify that assignee belongs to the work item's team
-      if (data.assignee_id) {
+      // Verify that assignee belongs to the work item's team and is active
+      const targetAssignee = data.assignee_id ? data.assignee_id.trim() : null;
+      if (targetAssignee) {
         const membership = await trx('team_memberships')
-          .where({ user_id: data.assignee_id, team_id: data.team_id })
+          .where({ user_id: targetAssignee, team_id: data.team_id })
           .first();
         if (!membership) {
           throw new BadRequestError(
-            `Cannot assign work item: User '${data.assignee_id}' is not a member of team '${data.team_id}'.`
+            `Cannot assign work item: User '${targetAssignee}' is not a member of team '${data.team_id}'.`
+          );
+        }
+        const assigneeUser = await trx('users').where({ id: targetAssignee }).first();
+        if (!assigneeUser || assigneeUser.is_active === 0 || assigneeUser.is_active === false) {
+          throw new BadRequestError(
+            `Cannot assign work item: User '${targetAssignee}' is inactive or has been offboarded.`
           );
         }
       }

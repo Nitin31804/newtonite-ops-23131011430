@@ -856,4 +856,80 @@ describe('Security Hardening & Edge-Case Defenses', () => {
     expect(reLogin.status).toBe(200);
     expect(reLogin.body.token).toBeTruthy();
   });
+
+  it('Defense 30: Centralized error handling sanitizes body-parser syntax errors against CWE-209 info leaks', async () => {
+    // Malformed JSON payload sent directly over HTTP
+    const res = await request(app)
+      .post('/api/items')
+      .set('Content-Type', 'application/json')
+      .set('x-user-id', 'usr-eng-lead')
+      .send('{ "title": "Malformed incident", "broken: ');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('Malformed JSON payload');
+    // Ensure absolute file paths and Node.js internal stacks are NOT leaked to the client
+    const bodyStr = JSON.stringify(res.body);
+    expect(bodyStr).not.toContain('node_modules');
+    expect(bodyStr).not.toContain('at parse');
+    expect(bodyStr).not.toContain('Users\\Admin');
+  });
+
+  it('Defense 31: Assignment integrity prevents creating or updating items to deactivated/offboarded operators', async () => {
+    // 1. Offboard usr-eng-1
+    await request(app)
+      .post('/api/auth/users/usr-eng-1/deactivate')
+      .set('x-user-id', 'usr-admin');
+
+    // 2. Attempt to create a new work item assigned to the offboarded user
+    const createRes = await request(app)
+      .post('/api/items')
+      .set('x-user-id', 'usr-eng-lead')
+      .send({
+        title: 'Incident assigned to departed engineer',
+        description: 'Should be rejected at the boundary',
+        type: 'incident',
+        priority: 'HIGH',
+        team_id: 'team-eng',
+        assignee_id: 'usr-eng-1',
+      });
+
+    expect(createRes.status).toBe(400);
+    expect(createRes.body.error).toContain('inactive or has been offboarded');
+
+    // 3. Create an open unassigned item
+    const openRes = await request(app)
+      .post('/api/items')
+      .set('x-user-id', 'usr-eng-lead')
+      .send({
+        title: 'Valid open incident',
+        description: 'Ready to be assigned',
+        type: 'incident',
+        priority: 'MEDIUM',
+        team_id: 'team-eng',
+      });
+    expect(openRes.status).toBe(201);
+    const newItemId = openRes.body.id;
+
+    // 4. Attempt to update the open item to assign it to the offboarded user
+    const updateRes = await request(app)
+      .patch(`/api/items/${newItemId}`)
+      .set('x-user-id', 'usr-eng-lead')
+      .send({
+        assignee_id: 'usr-eng-1',
+        version: openRes.body.version,
+      });
+
+    expect(updateRes.status).toBe(400);
+    expect(updateRes.body.error).toContain('inactive or has been offboarded');
+
+    // 5. Verify GET /api/teams/team-eng/members surfaces is_active: false for offboarded user
+    const membersRes = await request(app)
+      .get('/api/teams/team-eng/members')
+      .set('x-user-id', 'usr-eng-lead');
+
+    expect(membersRes.status).toBe(200);
+    const offboardedMember = membersRes.body.find((m: any) => m.id === 'usr-eng-1');
+    expect(offboardedMember).toBeTruthy();
+    expect(offboardedMember.is_active).toBe(false);
+  });
 });

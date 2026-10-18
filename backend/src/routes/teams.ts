@@ -34,9 +34,14 @@ router.get('/:id/members', async (req: AuthenticatedRequest, res: Response): Pro
     const members = await db('team_memberships')
       .join('users', 'team_memberships.user_id', 'users.id')
       .where({ 'team_memberships.team_id': teamId })
-      .select('users.id', 'users.name', 'users.email', 'team_memberships.role');
+      .select('users.id', 'users.name', 'users.email', 'users.is_active', 'team_memberships.role');
 
-    res.json(members);
+    const formattedMembers = members.map((m) => ({
+      ...m,
+      is_active: Boolean(m.is_active !== undefined ? m.is_active : true),
+    }));
+
+    res.json(formattedMembers);
   } catch (error) {
     console.error('List team members error:', error);
     res.status(500).json({ error: 'Failed to retrieve team members' });

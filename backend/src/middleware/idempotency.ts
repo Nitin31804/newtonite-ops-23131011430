@@ -121,6 +121,10 @@ export async function idempotencyMiddleware(
       }
     }, 20000);
 
+    if (heartbeatTimer && typeof heartbeatTimer.unref === 'function') {
+      heartbeatTimer.unref();
+    }
+
     const stopHeartbeat = () => {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);

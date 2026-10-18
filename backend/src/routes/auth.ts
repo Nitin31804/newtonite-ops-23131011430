@@ -250,13 +250,32 @@ router.post('/users/:id/reactivate', authMiddleware, async (req: AuthenticatedRe
       return;
     }
 
-    await db('users')
-      .where({ id: targetUserId })
-      .update({
-        is_active: true,
-        token_version: db.raw('token_version + 1'), // Prior tokens remain revoked; fresh login required
-        deactivated_at: null,
+    await db.transaction(async (trx) => {
+      await trx('users')
+        .where({ id: targetUserId })
+        .update({
+          is_active: true,
+          token_version: trx.raw('token_version + 1'), // Prior tokens remain revoked; fresh login required
+          deactivated_at: null,
+        });
+
+      await trx('outbox_jobs').insert({
+        id: uuidv4(),
+        event_type: 'USER_REACTIVATED',
+        payload: JSON.stringify({
+          userId: targetUser.id,
+          userName: targetUser.name,
+          userEmail: targetUser.email,
+          reactivatedBy: req.user!.id,
+          timestamp: new Date().toISOString(),
+        }),
+        status: 'PENDING',
+        attempts: 0,
+        max_attempts: 3,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
+    });
 
     res.json({
       message: `User ${targetUser.name} (${targetUser.email}) reactivated successfully. User may now sign in.`,

@@ -198,6 +198,30 @@ export class OutboxWorker {
         break;
       }
 
+      case 'USER_DEACTIVATED': {
+        notification = {
+          id: notifId,
+          channel: 'SLACK_WEBHOOK',
+          recipient: '#security-audit',
+          title: '🛡️ Security Event: Operator Offboarded & Access Revoked',
+          body: `User ${payload.userName || payload.deactivatedEmail || payload.deactivatedUserId || payload.userId} was deactivated by admin ${payload.deactivatedBy}. ${payload.unassignedWorkItems || payload.reclaimedItemsCount || 0} active items reclaimed.`,
+          timestamp,
+        };
+        break;
+      }
+
+      case 'USER_REACTIVATED': {
+        notification = {
+          id: notifId,
+          channel: 'SLACK_WEBHOOK',
+          recipient: '#security-audit',
+          title: '🛡️ Security Event: Operator Reactivated',
+          body: `User ${payload.userName || payload.userEmail || payload.userId} was reactivated by admin ${payload.reactivatedBy}.`,
+          timestamp,
+        };
+        break;
+      }
+
       case 'TEST_FAILURE_TRIGGER':
         // Used in unit tests to simulate worker retry and failure
         throw new Error('Simulated worker processing failure for retry testing.');
@@ -293,6 +317,10 @@ export class OutboxWorker {
         console.error('OutboxWorker batch error:', err);
       }
     }, intervalMs);
+
+    if (this.intervalTimer && typeof this.intervalTimer.unref === 'function') {
+      this.intervalTimer.unref();
+    }
   }
 
   stop(): void {
